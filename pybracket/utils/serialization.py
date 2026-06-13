@@ -105,6 +105,11 @@ def _config_from_dict(config: dict[str, Any]) -> dict[str, Any]:
     pm = out.get("pairing_method")
     if isinstance(pm, str):
         out["pairing_method"] = PairingMethod(pm)
+    # 'bye_rounds' (single_elim) is a seed->count map; JSON turns its int keys into strings,
+    # so coerce them back so dict and JSON round-trips agree.
+    bye_rounds = out.get("bye_rounds")
+    if isinstance(bye_rounds, dict):
+        out["bye_rounds"] = {int(k): int(v) for k, v in bye_rounds.items()}
     return out
 
 

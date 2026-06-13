@@ -107,7 +107,9 @@ def _advance_until_choice(bracket: pb.Bracket) -> pb.Bracket:
 
 
 def test_dual_opponent_choice_offers_both_survivors() -> None:
-    bracket = pb.generate_gauntlet(make_participants(8), style="dual", opponent_choice=True)
+    bracket = pb.generate_gauntlet(
+        make_participants(8), style="dual", opponent_choice=True, choice_scope="semifinals"
+    )
     # No choice until both lower-bracket survivors are known.
     assert not any(m.status is MatchStatus.PENDING_CHOICE for m in bracket.matches)
     bracket = _advance_until_choice(bracket)
@@ -118,7 +120,9 @@ def test_dual_opponent_choice_offers_both_survivors() -> None:
 
 
 def test_dual_opponent_choice_swaps_survivor() -> None:
-    bracket = pb.generate_gauntlet(make_participants(8), style="dual", opponent_choice=True)
+    bracket = pb.generate_gauntlet(
+        make_participants(8), style="dual", opponent_choice=True, choice_scope="semifinals"
+    )
     bracket = _advance_until_choice(bracket)
     chooser = next(m for m in bracket.matches if m.status is MatchStatus.PENDING_CHOICE)
     other_id = chooser.metadata["choice_other_match"]
@@ -135,7 +139,9 @@ def test_dual_opponent_choice_swaps_survivor() -> None:
 
 
 def test_dual_opponent_choice_full_run() -> None:
-    bracket = pb.generate_gauntlet(make_participants(8), style="dual", opponent_choice=True)
+    bracket = pb.generate_gauntlet(
+        make_participants(8), style="dual", opponent_choice=True, choice_scope="semifinals"
+    )
     guard = 0
     while not pb.is_complete(bracket):
         guard += 1

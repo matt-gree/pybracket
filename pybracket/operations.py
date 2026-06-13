@@ -40,10 +40,12 @@ def reseed(bracket: Bracket, new_seed_order: list[Any]) -> Bracket:
     if fmt == "single_elim":
         from .formats.single_elim import generate_single_elim
 
+        bye_rounds = cfg.get("bye_rounds")
         return generate_single_elim(
             reseeded,
             third_place_match=bool(cfg.get("third_place_match", False)),
-            protected_seeds=int(cfg.get("protected_seeds", 0)),
+            protected_seeds=0 if bye_rounds else int(cfg.get("protected_seeds", 0)),
+            bye_rounds={int(k): int(v) for k, v in bye_rounds.items()} if bye_rounds else None,
         )
     if fmt == "double_elim":
         from .formats.double_elim import generate_double_elim

@@ -113,3 +113,75 @@ def test_unsupported_elimination_format_rejected_at_reseed() -> None:
     pools = _play_pools(pools)
     with pytest.raises(pb.ValidationError):
         pb.reseed_pools_to_bracket(pools)
+
+
+# --- DRAFT -> publish flow ----------------------------------------------------------------
+
+
+def test_draft_pools_produces_draft_bracket() -> None:
+    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
+    pools = _play_pools(pools)
+    drafted = pb.draft_pools_to_bracket(pools)
+    assert drafted.elimination.state is BracketState.DRAFT
+    # The bracket is fully built (seeds placed) even though it is not yet live.
+    assert len(drafted.elimination.matches) > 0
+    assert len(drafted.elimination.participants) == 4
+
+
+def test_draft_requires_complete_pools() -> None:
+    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
+    with pytest.raises(pb.BracketStateError):
+        pb.draft_pools_to_bracket(pools)
+
+
+def test_publish_transitions_draft_to_published() -> None:
+    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
+    pools = _play_pools(pools)
+    drafted = pb.draft_pools_to_bracket(pools)
+    published = pb.publish_bracket(drafted)
+    assert published.elimination.state is BracketState.PUBLISHED
+    # Drafting then publishing is playable to completion.
+    published.elimination = simulate(published.elimination)
+    assert pb.is_complete(published.elimination)
+
+
+def test_publish_rejects_non_draft_bracket() -> None:
+    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
+    pools = _play_pools(pools)
+    published = pb.reseed_pools_to_bracket(pools)  # already PUBLISHED
+    with pytest.raises(pb.BracketStateError):
+        pb.publish_bracket(published)
+
+
+def test_reseed_pools_is_draft_then_publish_alias() -> None:
+    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
+    pools = _play_pools(pools)
+    one_step = pb.reseed_pools_to_bracket(pools)
+    two_step = pb.publish_bracket(pb.draft_pools_to_bracket(pools))
+    assert one_step.elimination.state is BracketState.PUBLISHED
+    # Same resulting bracket structure via either path.
+    assert pb.bracket_to_dict(one_step.elimination) == pb.bracket_to_dict(two_step.elimination)
+
+
+def test_draft_reorder_changes_seeding_before_publish() -> None:
+    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
+    pools = _play_pools(pools)
+    advancers = []
+    for pool in pools.pools:
+        standings = pb.get_standings(pool)
+        advancers.extend(s.participant_id for s in standings[:2])
+
+    drafted = pb.draft_pools_to_bracket(pools)
+    first_default = [m for m in drafted.elimination.matches if m.round_number == 1][0]
+
+    reordered = pb.draft_pools_to_bracket(pools, new_seed_order=list(reversed(advancers)))
+    assert reordered.elimination.state is BracketState.DRAFT
+    first_reordered = [m for m in reordered.elimination.matches if m.round_number == 1][0]
+    # Reversing the seed order changes who lands in the first slot.
+    assert (first_default.participant1_id, first_default.participant2_id) != (
+        first_reordered.participant1_id,
+        first_reordered.participant2_id,
+    )
+    published = pb.publish_bracket(reordered)
+    published.elimination = simulate(published.elimination)
+    assert pb.is_complete(published.elimination)

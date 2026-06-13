@@ -151,7 +151,7 @@ def _resolve_byes_forward(
 
 def _recompute_statuses(bracket: Bracket, counts: dict[int, int]) -> None:
     for m in bracket.matches:
-        if m.status in (MatchStatus.COMPLETED, MatchStatus.BYE):
+        if m.status in (MatchStatus.COMPLETED, MatchStatus.BYE, MatchStatus.NOT_NEEDED):
             continue
         if m.status is MatchStatus.PENDING_CHOICE:
             continue
@@ -185,9 +185,14 @@ def settle_initial(bracket: Bracket) -> None:
 def _apply_format_hooks(bracket: Bracket) -> None:
     """Run format-specific post-processing (e.g. gauntlet opponent-choice frontiers)."""
     if bracket.format == "gauntlet" and bracket.config.get("opponent_choice"):
-        from ..formats.gauntlet import refresh_gauntlet_choices
+        if bracket.config.get("style") == "dual" and bracket.config.get("choice_scope") == "round":
+            from ..formats.gauntlet import refresh_gauntlet_round_choices
 
-        refresh_gauntlet_choices(bracket)
+            refresh_gauntlet_round_choices(bracket)
+        else:
+            from ..formats.gauntlet import refresh_gauntlet_choices
+
+            refresh_gauntlet_choices(bracket)
 
 
 # --------------------------------------------------------------------------------------
@@ -291,7 +296,7 @@ def report_result(
         _place(ltarget, loser_id)
         touched.append(ltarget.id)
 
-    # Grand final -> reset activation.
+    # Grand final -> reset activation / settlement.
     gf, reset = _grand_final_matches(b)
     if gf is not None and m.id == gf.id and reset is not None:
         lb_final = _loser_bracket_final(b)
@@ -302,6 +307,11 @@ def report_result(
             reset.participant1_id = m.participant1_id
             reset.participant2_id = m.participant2_id
             reset.status = MatchStatus.READY
+        elif reset.status is MatchStatus.PENDING:
+            # The winners-bracket finalist won outright (or the reset is disabled): the
+            # reset match exists in the structure but is never required. It is not a bye —
+            # no participant advances through it; it simply closes.
+            reset.status = MatchStatus.NOT_NEEDED
 
     counts = compute_occupant_counts(b)
     _resolve_byes_forward(b, counts, matches, touched)
@@ -423,6 +433,16 @@ def unwind_result(
                 target.loser_id = None
                 target.advancement_type = None
 
+        # Unwinding the grand final's first set re-opens a reset that had settled to
+        # NOT_NEEDED (no participants were ever placed there, so nothing was "cleared").
+        if (
+            cur.bracket_side is BracketSide.GRAND_FINAL
+            and cur.round_number == 1
+            and reset is not None
+            and reset.status is MatchStatus.NOT_NEEDED
+        ):
+            reset.status = MatchStatus.PENDING
+
         if cur.advancement_type in REAL_RESULTS:
             signals.append(UnwindSignal(match_id=cur.id, metadata=dict(cur.metadata)))
 
@@ -437,6 +457,9 @@ def unwind_result(
     # Re-resolve byes that may have been cleared, then recompute statuses.
     _resolve_byes_forward(b, counts, matches, list(visited))
     _recompute_statuses(b, counts)
+    # Re-open or re-close format-specific frontiers (e.g. gauntlet opponent choices) whose
+    # inputs changed as a result of the unwind.
+    _apply_format_hooks(b)
     return b, signals
 
 

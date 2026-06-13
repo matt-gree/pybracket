@@ -27,12 +27,14 @@ from .errors import (
 from .formats import (
     PoolsBracket,
     advance_swiss_round,
+    draft_pools_to_bracket,
     generate_double_elim,
     generate_gauntlet,
     generate_pools,
     generate_round_robin,
     generate_single_elim,
     generate_swiss,
+    publish_bracket,
     reseed_pools_to_bracket,
 )
 from .models import (
@@ -110,6 +112,8 @@ __all__ = [
     "advance_swiss_round",
     # Reseeding / config
     "reseed",
+    "draft_pools_to_bracket",
+    "publish_bracket",
     "reseed_pools_to_bracket",
     "set_best_of",
     # Tiebreakers

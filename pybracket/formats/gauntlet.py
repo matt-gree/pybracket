@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from ..advancement.engine import settle_initial
 from ..errors import ValidationError
@@ -15,7 +15,7 @@ from ..utils.math import next_power_of_2
 from ..utils.validation import validate_participants
 from .base import IdGen, build_standard_bracket, make_match
 
-__all__ = ["generate_gauntlet", "refresh_gauntlet_choices"]
+__all__ = ["generate_gauntlet", "refresh_gauntlet_choices", "refresh_gauntlet_round_choices"]
 
 # A survivor source: where a dual-gauntlet semifinal's challenger comes from.
 #   ("feeder", match_id)  -> winner of a lower-seed sub-bracket match
@@ -174,6 +174,112 @@ def _finalize_dual(
     return bracket
 
 
+# A challenger entering a seated player's match: a lone seed, or the winner of a feeder match.
+_Challenger = tuple[str, Any]  # ("seed", Participant) | ("feeder", match_id)
+
+
+def _attach_challenger(match: Match, challenger: _Challenger, by_id: dict[int, Match]) -> None:
+    """Place a seed challenger into the match's open slot, or wire a feeder's winner toward it."""
+    kind, value = challenger
+    if kind == "seed":
+        if match.participant1_id is None:
+            match.participant1_id = value.id
+        else:
+            match.participant2_id = value.id
+    else:  # feeder match id
+        by_id[value].next_winner_match_id = match.id
+
+
+def _build_dual_gauntlet_round(participants: list[Participant]) -> Bracket:
+    """Build a round-by-round-choice dual gauntlet as a two-wide "staircase" tree.
+
+    Two seeds are *seated* at every level (the two best seeds not yet in the ladder). Each
+    faces a *challenger* climbing from the level below; the higher-seeded of the pair chooses
+    which challenger to take and the other inherits the rest. Seeds 1 and 2 are seated at the
+    semifinals, whose winners meet in the final — the same finish as the semifinals-scope dual
+    gauntlet. For an odd field the two lowest seeds contest a play-in so the bottom level still
+    has exactly two challengers; an even field feeds the two lowest seeds in directly.
+    """
+    ordered = sorted(participants, key=lambda p: p.seed)
+    n = len(ordered)
+    if n <= 3:
+        # Too few players to choose round by round; the standard dual gauntlet already covers
+        # the 2- and 3-player shapes (a single final / one byed semifinalist).
+        return _build_dual_gauntlet(participants, opponent_choice=True, choice_scope="round")
+
+    id_gen = IdGen()
+    matches: list[Match] = []
+    by_id: dict[int, Match] = {}
+    round_no = 0
+
+    odd = n % 2 == 1
+    # Number of seated choice levels (each seats two seeds), from the semifinals down.
+    levels = (n - 3) // 2 if odd else n // 2 - 1
+
+    # --- bottom challengers: the two inputs to the lowest seated level ---
+    if odd:
+        round_no += 1
+        play_in = make_match(
+            id_gen(), round_no, BracketSide.WINNERS, ordered[n - 1].id, ordered[n - 2].id
+        )
+        matches.append(play_in)
+        by_id[play_in.id] = play_in
+        # Challenger A = winner of the play-in; challenger B = the next seed up (enters directly).
+        challengers: list[_Challenger] = [("feeder", play_in.id), ("seed", ordered[n - 3])]
+    else:
+        challengers = [("seed", ordered[n - 1]), ("seed", ordered[n - 2])]
+
+    # --- seated levels, bottom (level `levels`) up to the semifinals (level 1) ---
+    for level in range(levels, 0, -1):
+        round_no += 1
+        seat_high = ordered[2 * level - 2]  # better seed -> the chooser
+        seat_low = ordered[2 * level - 1]
+        chooser = make_match(id_gen(), round_no, BracketSide.WINNERS, seat_high.id, None)
+        other = make_match(id_gen(), round_no, BracketSide.WINNERS, seat_low.id, None)
+        _attach_challenger(chooser, challengers[0], by_id)
+        _attach_challenger(other, challengers[1], by_id)
+        chooser.metadata = {"gauntlet_role": "chooser", "choice_other_match": other.id}
+        other.metadata = {"gauntlet_role": "other"}
+        for match in (chooser, other):
+            matches.append(match)
+            by_id[match.id] = match
+        # This level's two winners are the challengers for the next level up.
+        challengers = [("feeder", chooser.id), ("feeder", other.id)]
+
+    # --- final: the two semifinal winners meet ---
+    round_no += 1
+    final = make_match(id_gen(), round_no, BracketSide.WINNERS)
+    _attach_challenger(final, challengers[0], by_id)
+    _attach_challenger(final, challengers[1], by_id)
+    matches.append(final)
+    by_id[final.id] = final
+
+    total_rounds = round_no
+    rounds: list[Round] = []
+    for rn in range(1, total_rounds + 1):
+        ids = [m.id for m in matches if m.round_number == rn]
+        rounds.append(
+            Round(
+                number=rn,
+                bracket_side=BracketSide.WINNERS,
+                match_ids=ids,
+                name=gauntlet_round_name(rn, total_rounds, "dual"),
+            )
+        )
+
+    bracket = Bracket(
+        format="gauntlet",
+        state=BracketState.PUBLISHED,
+        participants=list(participants),
+        matches=matches,
+        rounds=rounds,
+        config={"style": "dual", "opponent_choice": True, "choice_scope": "round"},
+    )
+    settle_initial(bracket)
+    refresh_gauntlet_round_choices(bracket)
+    return bracket
+
+
 def generate_gauntlet(
     participants: list[Participant],
     style: Literal["single", "dual"],
@@ -192,8 +298,46 @@ def generate_gauntlet(
             )
         return _build_single_gauntlet(participants)
     if style == "dual":
+        if opponent_choice and choice_scope == "round":
+            return _build_dual_gauntlet_round(participants)
         return _build_dual_gauntlet(participants, opponent_choice, choice_scope)
     raise ValidationError(f"Unknown gauntlet style: {style!r}")
+
+
+def _open_choice_when_ready(chooser: Match, other: Match) -> None:
+    """Open one seated/challenger choice: the chooser becomes PENDING_CHOICE once both of its
+    challengers are known, otherwise an already-filled match is held back to PENDING.
+
+    The seated player always sits in slot 1; the challenger arrives in slot 2.
+    """
+    if chooser.metadata.get("choice_made"):
+        return
+    if chooser.status is MatchStatus.COMPLETED or other.status is MatchStatus.COMPLETED:
+        return
+
+    challenger_chooser = chooser.participant2_id
+    challenger_other = other.participant2_id
+    if challenger_chooser is None or challenger_other is None:
+        # A challenger is no longer known (e.g. a feeder result was unwound). Re-close an
+        # offer that was opened but never taken, and hold any filled match back to PENDING
+        # until both challengers are known again.
+        if chooser.status is MatchStatus.PENDING_CHOICE:
+            chooser.status = MatchStatus.PENDING
+            chooser.metadata = {
+                k: v for k, v in chooser.metadata.items() if k != "choice_pool"
+            }
+        for match in (chooser, other):
+            if (
+                match.participant1_id is not None
+                and match.participant2_id is not None
+                and match.status is MatchStatus.READY
+            ):
+                match.status = MatchStatus.PENDING
+        return
+
+    chooser.metadata = {**chooser.metadata, "choice_pool": [challenger_chooser, challenger_other]}
+    chooser.status = MatchStatus.PENDING_CHOICE
+    other.status = MatchStatus.PENDING
 
 
 def refresh_gauntlet_choices(bracket: Bracket) -> None:
@@ -210,29 +354,36 @@ def refresh_gauntlet_choices(bracket: Bracket) -> None:
     chooser = next(
         (m for m in bracket.matches if m.metadata.get("gauntlet_role") == "chooser"), None
     )
-    if chooser is None or chooser.metadata.get("choice_made"):
+    if chooser is None:
         return
     other = next(
         (m for m in bracket.matches if m.id == chooser.metadata.get("choice_other_match")), None
     )
     if other is None:
         return
-    if chooser.status is MatchStatus.COMPLETED or other.status is MatchStatus.COMPLETED:
+    _open_choice_when_ready(chooser, other)
+
+
+def refresh_gauntlet_round_choices(bracket: Bracket) -> None:
+    """Round-scope analogue of :func:`refresh_gauntlet_choices`.
+
+    A round-scope dual gauntlet has a chooser/other pair at *every* level, not only the
+    semifinals. After each ``report_result`` this opens whichever chooser now has both of its
+    challengers known — choices naturally resolve from the bottom of the ladder up, since each
+    level's challengers are the winners of the level below.
+    """
+    if bracket.format != "gauntlet" or not bracket.config.get("opponent_choice"):
+        return
+    if bracket.config.get("style") != "dual" or bracket.config.get("choice_scope") != "round":
         return
 
-    surv_chooser = chooser.participant2_id  # seed sits in slot 1, survivor arrives in slot 2
-    surv_other = other.participant2_id
-    if surv_chooser is None or surv_other is None:
-        # Hold a semifinal that is already filled until the other survivor is decided.
-        for sf in (chooser, other):
-            if (
-                sf.participant1_id is not None
-                and sf.participant2_id is not None
-                and sf.status is MatchStatus.READY
-            ):
-                sf.status = MatchStatus.PENDING
-        return
-
-    chooser.metadata = {**chooser.metadata, "choice_pool": [surv_chooser, surv_other]}
-    chooser.status = MatchStatus.PENDING_CHOICE
-    other.status = MatchStatus.PENDING
+    for chooser in bracket.matches:
+        if chooser.metadata.get("gauntlet_role") != "chooser":
+            continue
+        other = next(
+            (m for m in bracket.matches if m.id == chooser.metadata.get("choice_other_match")),
+            None,
+        )
+        if other is None:
+            continue
+        _open_choice_when_ready(chooser, other)

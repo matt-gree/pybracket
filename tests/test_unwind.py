@@ -112,3 +112,25 @@ def test_unwind_grand_final_deactivates_reset() -> None:
     reset = [m for m in new.matches if m.bracket_side is BS.GRAND_FINAL and m.round_number == 2][0]
     assert reset.status is MatchStatus.PENDING
     assert reset.participant1_id is None and reset.participant2_id is None
+
+
+def test_unwind_grand_final_reopens_not_needed_reset() -> None:
+    # When the WB finalist wins game 1 outright the reset settles to NOT_NEEDED. Unwinding
+    # the grand final must re-open it so the reset can come back into play.
+    from pybracket import BracketSide as BS
+
+    from tests.helpers import simulate
+
+    bracket = pb.generate_double_elim(make_participants(8), grand_final_reset=True)
+    bracket = simulate(bracket)  # seed 1 wins outright
+    assert pb.is_complete(bracket)
+    gf = [m for m in bracket.matches if m.bracket_side is BS.GRAND_FINAL and m.round_number == 1][0]
+    reset = [m for m in bracket.matches if m.bracket_side is BS.GRAND_FINAL and m.round_number == 2][0]
+    assert reset.status is MatchStatus.NOT_NEEDED
+
+    new, _ = pb.unwind_result(bracket, gf.id)
+    reset_after = [m for m in new.matches if m.bracket_side is BS.GRAND_FINAL and m.round_number == 2][0]
+    assert reset_after.status is MatchStatus.PENDING
+    # The grand final itself is replayable.
+    assert pb.get_match(new, gf.id).status is MatchStatus.READY
+    assert not pb.is_complete(new)

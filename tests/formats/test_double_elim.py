@@ -51,8 +51,29 @@ def test_grand_final_reset_skipped_when_wb_finalist_wins() -> None:
     bracket = pb.generate_double_elim(make_participants(8), grand_final_reset=True)
     bracket = simulate(bracket)  # seed 1 wins the WB and the grand final outright
     reset = [m for m in bracket.matches if m.bracket_side is BracketSide.GRAND_FINAL and m.round_number == 2][0]
-    assert reset.status is not MatchStatus.COMPLETED
+    # The reset existed in the structure but was never required: NOT_NEEDED, not a bye and
+    # not completed. No participant advanced through it.
+    assert reset.status is MatchStatus.NOT_NEEDED
+    assert reset.winner_id is None and reset.loser_id is None
+    assert reset.participant1_id is None and reset.participant2_id is None
+    assert pb.is_complete(bracket)
     assert pb.get_winner(bracket).id == 1
+
+
+def test_grand_final_reset_match_exists_from_generation_as_pending() -> None:
+    # The reset slot is always part of the data model; it only settles to NOT_NEEDED later.
+    bracket = pb.generate_double_elim(make_participants(8), grand_final_reset=True)
+    reset = [m for m in bracket.matches if m.bracket_side is BracketSide.GRAND_FINAL and m.round_number == 2][0]
+    assert reset.status is MatchStatus.PENDING
+
+
+def test_not_needed_reset_survives_serialization() -> None:
+    bracket = pb.generate_double_elim(make_participants(8), grand_final_reset=True)
+    bracket = simulate(bracket)
+    restored = pb.bracket_from_json(pb.bracket_to_json(bracket))
+    assert restored == bracket
+    reset = [m for m in restored.matches if m.bracket_side is BracketSide.GRAND_FINAL and m.round_number == 2][0]
+    assert reset.status is MatchStatus.NOT_NEEDED
 
 
 def test_grand_final_reset_activates_when_lb_finalist_wins() -> None:
@@ -85,7 +106,9 @@ def test_grand_final_reset_false_completes_immediately() -> None:
     bracket = pb.generate_double_elim(make_participants(8), grand_final_reset=False)
     bracket = simulate(bracket, decide)
     reset = [m for m in bracket.matches if m.bracket_side is BracketSide.GRAND_FINAL and m.round_number == 2][0]
-    assert reset.status is not MatchStatus.COMPLETED
+    # With the reset disabled, the first set is decisive and the reset slot closes as
+    # NOT_NEEDED regardless of who wins it.
+    assert reset.status is MatchStatus.NOT_NEEDED
     assert pb.is_complete(bracket)
 
 

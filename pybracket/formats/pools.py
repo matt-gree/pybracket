@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..advancement.engine import is_complete
+from ..advancement.engine import is_complete, settle_initial
 from ..errors import BracketStateError, ValidationError
 from ..models.bracket import Bracket
 from ..models.enums import BracketState
@@ -18,7 +19,13 @@ from .double_elim import build_double_elim
 from .round_robin import generate_round_robin
 from .single_elim import build_single_elim
 
-__all__ = ["PoolsBracket", "generate_pools", "reseed_pools_to_bracket"]
+__all__ = [
+    "PoolsBracket",
+    "generate_pools",
+    "draft_pools_to_bracket",
+    "publish_bracket",
+    "reseed_pools_to_bracket",
+]
 
 
 @dataclass
@@ -93,29 +100,36 @@ def _build_elimination(
     participants: list[Participant],
     bracket_format: str,
     bracket_kwargs: dict[str, Any],
+    state: BracketState = BracketState.PUBLISHED,
 ) -> Bracket:
     if bracket_format == "single_elim":
         return build_single_elim(
             slots,
             participants,
             third_place_match=bool(bracket_kwargs.get("third_place_match", False)),
-            state=BracketState.PUBLISHED,
+            state=state,
         )
     if bracket_format == "double_elim":
         return build_double_elim(
             slots,
             participants,
             grand_final_reset=bool(bracket_kwargs.get("grand_final_reset", True)),
-            state=BracketState.PUBLISHED,
+            state=state,
         )
     raise ValidationError(f"Unsupported pool bracket_format: {bracket_format!r}")
 
 
-def reseed_pools_to_bracket(
+def draft_pools_to_bracket(
     pools_bracket: PoolsBracket,
     new_seed_order: list[Any] | None = None,
 ) -> PoolsBracket:
-    """After pools finish, seed survivors into the elimination bracket and publish it."""
+    """Seed survivors from the finished pool standings into a DRAFT elimination bracket.
+
+    The bracket is fully built and settled but left in ``BracketState.DRAFT`` so the TO can
+    review (and, by passing ``new_seed_order``, reorder) the seeding before publishing it for
+    play. Call :func:`publish_bracket` to lock it in. ``new_seed_order`` is a list of advancing
+    participant ids in the desired seed order (seed 1 first).
+    """
     for pool in pools_bracket.pools:
         if not is_complete(pool):
             raise BracketStateError("All pool matches must be complete before reseeding.")
@@ -154,7 +168,9 @@ def reseed_pools_to_bracket(
         )
         seed_counter += 1
 
-    elimination = _build_elimination(slots, reseeded, bracket_format, bracket_kwargs)
+    elimination = _build_elimination(
+        slots, reseeded, bracket_format, bracket_kwargs, state=BracketState.DRAFT
+    )
 
     new_config = dict(pools_bracket.config)
     new_config["advancing_ids"] = [p.id for p in advancing]
@@ -164,3 +180,37 @@ def reseed_pools_to_bracket(
         participants=list(pools_bracket.participants),
         config=new_config,
     )
+
+
+def publish_bracket(pools_bracket: PoolsBracket) -> PoolsBracket:
+    """Transition a DRAFT elimination bracket to PUBLISHED, locking it in for play.
+
+    Re-settles the bracket (resolving construction-time byes and initial statuses) and flips
+    its state to PUBLISHED. The pools and participants are carried over unchanged.
+    """
+    if pools_bracket.elimination.state is not BracketState.DRAFT:
+        raise BracketStateError("Bracket must be in DRAFT state to publish.")
+
+    elimination = copy.deepcopy(pools_bracket.elimination)
+    elimination.state = BracketState.PUBLISHED
+    # Re-run settlement now that the bracket is no longer DRAFT, so statuses/byes and the
+    # PUBLISHED/COMPLETE transition resolve correctly.
+    settle_initial(elimination)
+    return PoolsBracket(
+        pools=list(pools_bracket.pools),
+        elimination=elimination,
+        participants=list(pools_bracket.participants),
+        config=dict(pools_bracket.config),
+    )
+
+
+def reseed_pools_to_bracket(
+    pools_bracket: PoolsBracket,
+    new_seed_order: list[Any] | None = None,
+) -> PoolsBracket:
+    """Convenience: draft the elimination bracket from pool results and publish it in one step.
+
+    Equivalent to ``publish_bracket(draft_pools_to_bracket(pools_bracket, new_seed_order))``.
+    Use the two-step flow directly when the TO needs to review or reorder seeds first.
+    """
+    return publish_bracket(draft_pools_to_bracket(pools_bracket, new_seed_order))

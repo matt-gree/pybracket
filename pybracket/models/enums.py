@@ -18,6 +18,7 @@ class MatchStatus(Enum):
     BYE = "bye"  # Auto-advance, no game played
     COMPLETED = "completed"  # Result reported
     PENDING_CHOICE = "pending_choice"  # Gauntlet: higher seed must pick an opponent first
+    NOT_NEEDED = "not_needed"  # Match existed in the structure but was never required to be played
 
 
 class BracketSide(Enum):

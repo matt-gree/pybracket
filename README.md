@@ -62,8 +62,21 @@ bracket = pb.advance_swiss_round(bracket)
 
 ```python
 pools = pb.generate_pools(players, num_pools=2, advancement_count=2)
-# Play all pool matches, then snake-seed the survivors into the elimination bracket:
+# Play all pool matches, then snake-seed the survivors into a DRAFT elimination bracket the
+# organizer can review (and reorder) before it goes live:
+pools = pb.draft_pools_to_bracket(pools)
+pools = pb.draft_pools_to_bracket(pools, new_seed_order=[...])  # optional manual reseed
+pools = pb.publish_bracket(pools)                               # lock it in for play
+
+# Or do both steps at once:
 pools = pb.reseed_pools_to_bracket(pools)
+```
+
+### Multi-round byes (single elimination)
+
+```python
+# Seeds 1-2 enter in round 3, seeds 3-4 enter in round 2, seeds 5-8 play round 1.
+bracket = pb.generate_single_elim(players, bye_rounds={1: 2, 2: 2, 3: 1, 4: 1})
 ```
 
 ### Correcting a result
