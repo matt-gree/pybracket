@@ -130,3 +130,22 @@ def test_every_participant_plays_at_least_two_matches(n: int) -> None:
                 if pid is not None:
                     appearances[pid] += 1
     assert all(count >= 2 for count in appearances.values())
+
+
+def test_protected_seeds_separate_quarters() -> None:
+    bracket = pb.generate_double_elim(make_participants(8), protected_seeds=4)
+    assert bracket.config["protected_seeds"] == 4
+    wb_round1 = [
+        m
+        for m in bracket.matches
+        if m.round_number == 1 and m.bracket_side is BracketSide.WINNERS
+    ]
+    for m in wb_round1:
+        top4 = {s for s in (m.participant1_id, m.participant2_id) if s in (1, 2, 3, 4)}
+        assert len(top4) <= 1
+
+
+def test_protected_seeds_full_simulation() -> None:
+    bracket = pb.generate_double_elim(make_participants(8), protected_seeds=4)
+    bracket = simulate(bracket)
+    assert pb.get_winner(bracket).id == 1

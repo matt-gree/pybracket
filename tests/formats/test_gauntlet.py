@@ -66,12 +66,31 @@ def test_dual_gauntlet_completes() -> None:
     assert pb.get_winner(bracket).id == 1
 
 
-@pytest.mark.parametrize("n", [4, 5, 8])
+@pytest.mark.parametrize("n", [2, 3, 4, 5, 8])
 def test_dual_gauntlet_completes_various_sizes(n: int) -> None:
     bracket = pb.generate_gauntlet(make_participants(n), style="dual")
     bracket = simulate(bracket)
     assert pb.is_complete(bracket)
     assert pb.get_winner(bracket) is not None
+
+
+def test_dual_gauntlet_two_players_is_single_final() -> None:
+    bracket = pb.generate_gauntlet(make_participants(2), style="dual")
+    assert len(bracket.matches) == 1
+    assert bracket.rounds[-1].name == "Final"
+
+
+def test_dual_gauntlet_three_players_byes_one_semifinalist() -> None:
+    # Seeds 1 and 2 enter at the semis; the lone lower seed (3) faces seed 1 while seed 2
+    # gets a bye into the final.
+    bracket = pb.generate_gauntlet(make_participants(3), style="dual")
+    bracket = simulate(bracket)
+    assert pb.get_winner(bracket).id == 1
+
+
+def test_unknown_gauntlet_style_rejected() -> None:
+    with pytest.raises(pb.ValidationError):
+        pb.generate_gauntlet(make_participants(4), style="triple")  # type: ignore[arg-type]
 
 
 def _advance_until_choice(bracket: pb.Bracket) -> pb.Bracket:

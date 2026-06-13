@@ -64,3 +64,17 @@ def test_assert_protected_seeds_detects_collision() -> None:
     bad = [1, 2, 3, 4, 5, 6, 7, 8]
     with pytest.raises(ValidationError):
         assert_protected_seeds(bad, 4, 8)
+
+
+def test_assert_protected_seeds_zero_is_noop() -> None:
+    assert_protected_seeds([1, 2, 3, 4], 0, 4)  # no exception, nothing protected
+
+
+def test_assert_protected_seeds_rejects_more_than_size() -> None:
+    with pytest.raises(ValidationError):
+        assert_protected_seeds([1, 2, 3, 4], protected=8, size=4)
+
+
+def test_seed_slots_requires_power_of_two() -> None:
+    with pytest.raises(ValidationError):
+        seed_slots([1, 2, 3], 6)

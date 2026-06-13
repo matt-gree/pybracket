@@ -88,3 +88,28 @@ def test_manual_reseed_override() -> None:
         advancers.extend(s.participant_id for s in standings[:2])
     pools = pb.reseed_pools_to_bracket(pools, new_seed_order=advancers)
     assert len(pools.elimination.participants) == 4
+
+
+def test_num_pools_must_be_positive() -> None:
+    with pytest.raises(pb.ValidationError):
+        pb.generate_pools(make_participants(8), num_pools=0, advancement_count=1)
+
+
+def test_advancement_count_must_be_positive() -> None:
+    with pytest.raises(pb.ValidationError):
+        pb.generate_pools(make_participants(8), num_pools=2, advancement_count=0)
+
+
+def test_advancement_count_cannot_exceed_pool_size() -> None:
+    # 8 players over 2 pools = 4 each; advancing 5 is impossible.
+    with pytest.raises(pb.ValidationError):
+        pb.generate_pools(make_participants(8), num_pools=2, advancement_count=5)
+
+
+def test_unsupported_elimination_format_rejected_at_reseed() -> None:
+    pools = pb.generate_pools(
+        make_participants(8), num_pools=2, advancement_count=2, bracket_format="round_robin"
+    )
+    pools = _play_pools(pools)
+    with pytest.raises(pb.ValidationError):
+        pb.reseed_pools_to_bracket(pools)

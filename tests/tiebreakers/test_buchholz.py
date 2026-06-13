@@ -65,3 +65,10 @@ def test_truncated_buchholz_drops_lowest() -> None:
 def test_truncated_name() -> None:
     assert BuchholzTiebreaker(truncated=True).name == "buchholz_truncated"
     assert BuchholzTiebreaker().name == "buchholz"
+
+
+def test_buchholz_zero_when_no_opponents() -> None:
+    # A player who has only ever had a bye has faced no opponents -> Buchholz 0.
+    ctx = StandingsContext([], [1])
+    assert BuchholzTiebreaker().score(1, ctx) == 0.0
+    assert BuchholzTiebreaker(truncated=True).score(1, ctx) == 0.0

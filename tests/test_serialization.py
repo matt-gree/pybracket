@@ -74,6 +74,17 @@ def test_uuid_ids_survive_dict() -> None:
     assert all(isinstance(p.id, uuid.UUID) for p in restored.participants)
 
 
+def test_uuid_ids_serialize_to_json() -> None:
+    # UUID ids are not JSON-native; bracket_to_json stringifies them via _json_default.
+    players = [pb.Participant(id=uuid.uuid4(), seed=i, name=f"U{i}") for i in range(1, 5)]
+    bracket = pb.generate_single_elim(players)
+    text = pb.bracket_to_json(bracket)
+    assert str(players[0].id) in text
+    restored = pb.bracket_from_json(text)
+    # Ids come back as strings (JSON has no UUID type); structure is otherwise preserved.
+    assert {str(p.id) for p in players} == {p.id for p in restored.participants}
+
+
 def test_swiss_pairing_method_round_trips() -> None:
     bracket = pb.generate_swiss(make_participants(8), pairing_method=pb.PairingMethod.DUTCH)
     restored = pb.bracket_from_dict(pb.bracket_to_dict(bracket))

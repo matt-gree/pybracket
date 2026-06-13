@@ -44,3 +44,32 @@ def test_rank_by_score_then_seed() -> None:
     scores = {1: 0.0, 2: 2.0, 3: 1.0, 4: 1.0}
     ranked = rank_participants(participants, scores)
     assert [p.id for p in ranked] == [2, 3, 4, 1]
+
+
+def test_odd_field_without_byes_raises() -> None:
+    participants = make_participants(5)
+    scores = {p.id: 0.0 for p in participants}
+    with pytest.raises(ValueError):
+        monrad_pairings(participants, scores, set(), set(), allow_bye=False)
+
+
+def test_bye_when_everyone_already_had_one() -> None:
+    # When every remaining player has already had a bye, the lowest-ranked still takes it.
+    participants = make_participants(5)
+    scores = {p.id: 0.0 for p in participants}
+    _, bye = monrad_pairings(participants, scores, set(), had_bye={1, 2, 3, 4, 5})
+    assert bye == 5
+
+
+def test_falls_back_when_no_rematch_free_pairing() -> None:
+    # Every possible pair has already been played: backtracking fails, so we fall back to a
+    # plain nearest-neighbour pairing rather than crashing.
+    participants = make_participants(4)
+    scores = {p.id: 0.0 for p in participants}
+    played = {
+        frozenset((1, 2)), frozenset((1, 3)), frozenset((1, 4)),
+        frozenset((2, 3)), frozenset((2, 4)), frozenset((3, 4)),
+    }
+    pairings, bye = monrad_pairings(participants, scores, played, set())
+    assert bye is None
+    assert pairings == [(1, 2), (3, 4)]

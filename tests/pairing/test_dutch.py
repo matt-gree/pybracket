@@ -55,3 +55,25 @@ def test_bye_to_lowest() -> None:
     scores = {p.id: 0.0 for p in participants}
     _, bye = dutch_pairings(participants, scores, set(), set())
     assert bye == 5
+
+
+def test_odd_field_without_byes_raises() -> None:
+    participants = make_participants(5)
+    scores = {p.id: 0.0 for p in participants}
+    with pytest.raises(ValueError):
+        dutch_pairings(participants, scores, set(), set(), allow_bye=False)
+
+
+def test_falls_back_when_no_rematch_free_pairing() -> None:
+    # All pairs already played: the no-rematch backtrack fails and we fall back to a plain
+    # ranked nearest-neighbour pairing.
+    participants = make_participants(4)
+    scores = {p.id: 0.0 for p in participants}
+    played = {
+        frozenset((1, 2)), frozenset((1, 3)), frozenset((1, 4)),
+        frozenset((2, 3)), frozenset((2, 4)), frozenset((3, 4)),
+    }
+    pairings, bye = dutch_pairings(participants, scores, played, set())
+    assert bye is None
+    assert {frozenset(p) for p in pairings}  # produced a pairing rather than raising
+    assert len(pairings) == 2
