@@ -10,18 +10,10 @@ from ..models.match import Match
 from ..models.participant import Participant
 from ..models.round import Round
 from ..naming.round_names import gauntlet_round_name
-from ..seeding.algorithms import seed_slots
-from ..utils.math import next_power_of_2
 from ..utils.validation import validate_participants
-from .base import IdGen, build_standard_bracket, make_match
+from .base import IdGen, make_match
 
 __all__ = ["generate_gauntlet", "refresh_gauntlet_choices", "refresh_gauntlet_round_choices"]
-
-# A survivor source: where a dual-gauntlet semifinal's challenger comes from.
-#   ("feeder", match_id)  -> winner of a lower-seed sub-bracket match
-#   ("concrete", pid)     -> a lone lower seed (no sub-bracket match needed)
-#   ("bye", None)              -> no opponent; the top seed byes straight to the final
-Survivor = tuple[str, object]
 
 
 def _build_single_gauntlet(participants: list[Participant]) -> Bracket:
@@ -68,85 +60,130 @@ def _build_dual_gauntlet(
     opponent_choice: bool,
     choice_scope: str,
 ) -> Bracket:
-    """Seeds 1 and 2 are byed to the two semifinals; seeds 3..N play down to two survivors.
+    """Seeds 1 and 2 are seated at the two semifinals; everyone below climbs two ladders.
 
-    With `opponent_choice`, the higher seed (1) picks which survivor to face in the
-    semifinal and seed 2 takes the other.
+    The lower seeds form a "staircase": two seats are filled at every level (the two best seeds
+    not yet placed), each meeting a challenger climbing from the level below. This keeps exactly
+    two games per round at every size — a true double gauntlet that never collapses into a
+    regular sub-bracket the way a balanced lower bracket does past ~8 players.
+
+    ``opponent_choice`` lets the higher seat of a level pick which climber to face; the other
+    seat inherits the rest. With ``choice_scope="round"`` that choice is offered at every level;
+    with ``"semifinals"`` only seeds 1 and 2 choose (the lower levels are fixed by seeding).
     """
     ordered = sorted(participants, key=lambda p: p.seed)
-    seed1, seed2 = ordered[0], ordered[1]
-    lower = ordered[2:]
+    if len(ordered) <= 3:
+        return _build_dual_small(ordered, participants, opponent_choice, choice_scope)
+    return _build_dual_staircase(ordered, participants, opponent_choice, choice_scope)
+
+
+def _build_dual_small(
+    ordered: list[Participant],
+    participants: list[Participant],
+    opponent_choice: bool,
+    choice_scope: str,
+) -> Bracket:
+    """The 2- and 3-player shapes: a single final, or one byed semifinalist."""
     id_gen = IdGen()
-    matches: list[Match] = []
-    rounds: list[Round] = []
+    if len(ordered) == 2:
+        final = make_match(id_gen(), 1, BracketSide.WINNERS, ordered[0].id, ordered[1].id)
+        rounds = [Round(1, BracketSide.WINNERS, [final.id], "Final")]
+        return _finalize_dual(participants, [final], rounds, opponent_choice, choice_scope)
 
-    if not lower:
-        # Only two participants: a single final.
-        final = make_match(id_gen(), 1, BracketSide.WINNERS, seed1.id, seed2.id)
-        matches.append(final)
-        rounds.append(Round(1, BracketSide.WINNERS, [final.id], "Final"))
-        return _finalize_dual(participants, matches, rounds, opponent_choice, choice_scope)
-
-    surv_a, surv_b, sub_matches, sub_round_ids, semi_round = _build_lower_subbracket(lower, id_gen)
-    matches.extend(sub_matches)
-    by_id = {m.id: m for m in matches}
-
-    for i, ids in enumerate(sub_round_ids):
-        rounds.append(
-            Round(i + 1, BracketSide.WINNERS, list(ids), f"Gauntlet Round {i + 1}")
-        )
-
-    final_round = semi_round + 1
-    sf1 = make_match(id_gen(), semi_round, BracketSide.WINNERS, seed1.id, _concrete(surv_a))
-    sf2 = make_match(id_gen(), semi_round, BracketSide.WINNERS, seed2.id, _concrete(surv_b))
-    final = make_match(id_gen(), final_round, BracketSide.WINNERS)
+    # Three players: seed 1 faces seed 3 at one semifinal; seed 2 byes into the final.
+    sf1 = make_match(id_gen(), 1, BracketSide.WINNERS, ordered[0].id, ordered[2].id)
+    sf2 = make_match(id_gen(), 1, BracketSide.WINNERS, ordered[1].id, None)
+    final = make_match(id_gen(), 2, BracketSide.WINNERS)
     sf1.next_winner_match_id = final.id
     sf2.next_winner_match_id = final.id
-    _wire_survivor(surv_a, sf1, by_id)
-    _wire_survivor(surv_b, sf2, by_id)
+    rounds = [
+        Round(1, BracketSide.WINNERS, [sf1.id, sf2.id], "Semifinals"),
+        Round(2, BracketSide.WINNERS, [final.id], "Final"),
+    ]
+    return _finalize_dual(participants, [sf1, sf2, final], rounds, opponent_choice, choice_scope)
 
-    # Opponent choice only makes sense when both semifinals have a real survivor to choose.
-    if opponent_choice and surv_a[0] != "bye" and surv_b[0] != "bye":
-        sf1.metadata = {"gauntlet_role": "chooser", "choice_other_match": sf2.id}
-        sf2.metadata = {"gauntlet_role": "other"}
 
-    matches.extend([sf1, sf2, final])
-    rounds.append(Round(semi_round, BracketSide.WINNERS, [sf1.id, sf2.id], "Semifinals"))
-    rounds.append(Round(final_round, BracketSide.WINNERS, [final.id], "Final"))
+def _level_has_choice(level: int, opponent_choice: bool, choice_scope: str) -> bool:
+    """Whether the higher seat at a seated level chooses its challenger (level 1 == semifinals)."""
+    if not opponent_choice:
+        return False
+    if choice_scope == "round":
+        return True
+    return level == 1  # semifinals scope: only seeds 1 and 2 choose
 
+
+def _build_dual_staircase(
+    ordered: list[Participant],
+    participants: list[Participant],
+    opponent_choice: bool,
+    choice_scope: str,
+) -> Bracket:
+    """Build the two-ladder staircase for a field of four or more.
+
+    Two seeds are seated at every level (the two best not yet in the ladder), each facing a
+    challenger from the level below; their winners become the next level's challengers. Seeds 1
+    and 2 are seated at the semifinals, whose winners meet in the final. An odd field gives the
+    two lowest seeds a play-in so the bottom level still has exactly two challengers.
+    """
+    n = len(ordered)
+    id_gen = IdGen()
+    matches: list[Match] = []
+    by_id: dict[int, Match] = {}
+    round_no = 0
+
+    odd = n % 2 == 1
+    # Seated choice levels (each seats two seeds), counted from the semifinals (level 1) down.
+    levels = (n - 3) // 2 if odd else n // 2 - 1
+
+    # --- bottom challengers: the two inputs to the lowest seated level ---
+    if odd:
+        round_no += 1
+        play_in = make_match(
+            id_gen(), round_no, BracketSide.WINNERS, ordered[n - 1].id, ordered[n - 2].id
+        )
+        matches.append(play_in)
+        by_id[play_in.id] = play_in
+        challengers: list[_Challenger] = [("feeder", play_in.id), ("seed", ordered[n - 3])]
+    else:
+        challengers = [("seed", ordered[n - 1]), ("seed", ordered[n - 2])]
+
+    # --- seated levels, bottom (level `levels`) up to the semifinals (level 1) ---
+    for level in range(levels, 0, -1):
+        round_no += 1
+        seat_high = ordered[2 * level - 2]  # the better seed of the pair
+        seat_low = ordered[2 * level - 1]
+        high_match = make_match(id_gen(), round_no, BracketSide.WINNERS, seat_high.id, None)
+        low_match = make_match(id_gen(), round_no, BracketSide.WINNERS, seat_low.id, None)
+        _attach_challenger(high_match, challengers[0], by_id)
+        _attach_challenger(low_match, challengers[1], by_id)
+        if _level_has_choice(level, opponent_choice, choice_scope):
+            high_match.metadata = {"gauntlet_role": "chooser", "choice_other_match": low_match.id}
+            low_match.metadata = {"gauntlet_role": "other"}
+        for match in (high_match, low_match):
+            matches.append(match)
+            by_id[match.id] = match
+        # This level's two winners are the next level's challengers (one ladder per seat).
+        challengers = [("feeder", high_match.id), ("feeder", low_match.id)]
+
+    # --- final: the two semifinal winners meet ---
+    round_no += 1
+    final = make_match(id_gen(), round_no, BracketSide.WINNERS)
+    _attach_challenger(final, challengers[0], by_id)
+    _attach_challenger(final, challengers[1], by_id)
+    matches.append(final)
+    by_id[final.id] = final
+
+    total_rounds = round_no
+    rounds = [
+        Round(
+            number=rn,
+            bracket_side=BracketSide.WINNERS,
+            match_ids=[m.id for m in matches if m.round_number == rn],
+            name=gauntlet_round_name(rn, total_rounds, "dual"),
+        )
+        for rn in range(1, total_rounds + 1)
+    ]
     return _finalize_dual(participants, matches, rounds, opponent_choice, choice_scope)
-
-
-def _build_lower_subbracket(
-    lower: list[Participant], id_gen: IdGen
-) -> tuple[Survivor, Survivor, list[Match], list[list[int]], int]:
-    """Reduce the lower seeds to two survivors (the two halves of a single-elim sub-bracket)."""
-    if len(lower) == 1:
-        return ("concrete", lower[0].id), ("bye", None), [], [], 1
-    if len(lower) == 2:
-        return ("concrete", lower[0].id), ("concrete", lower[1].id), [], [], 1
-
-    size = next_power_of_2(len(lower))
-    slots = seed_slots(lower, size)
-    sub_matches, round_ids, final_id = build_standard_bracket(slots, id_gen, BracketSide.WINNERS)
-    depth = len(round_ids)
-    # The two matches feeding the sub-bracket final become the two survivors; the sub-final
-    # itself is replaced by the dual-gauntlet semifinals (which inject seeds 1 and 2).
-    feeders = [m for m in sub_matches if m.next_winner_match_id == final_id]
-    left, right = feeders[0], feeders[1]
-    kept = [m for m in sub_matches if m.id != final_id]
-    left.next_winner_match_id = None
-    right.next_winner_match_id = None
-    return ("feeder", left.id), ("feeder", right.id), kept, round_ids[:-1], depth
-
-
-def _concrete(surv: Survivor) -> object | None:
-    return surv[1] if surv[0] == "concrete" else None
-
-
-def _wire_survivor(surv: Survivor, semifinal: Match, by_id: dict[int, Match]) -> None:
-    if surv[0] == "feeder":
-        by_id[surv[1]].next_winner_match_id = semifinal.id  # type: ignore[index]
 
 
 def _finalize_dual(
@@ -170,7 +207,10 @@ def _finalize_dual(
     )
     settle_initial(bracket)
     if opponent_choice:
-        refresh_gauntlet_choices(bracket)
+        if choice_scope == "round":
+            refresh_gauntlet_round_choices(bracket)
+        else:
+            refresh_gauntlet_choices(bracket)
     return bracket
 
 
@@ -190,103 +230,13 @@ def _attach_challenger(match: Match, challenger: _Challenger, by_id: dict[int, M
         by_id[value].next_winner_match_id = match.id
 
 
-def _build_dual_gauntlet_round(participants: list[Participant]) -> Bracket:
-    """Build a round-by-round-choice dual gauntlet as a two-wide "staircase" tree.
-
-    Two seeds are *seated* at every level (the two best seeds not yet in the ladder). Each
-    faces a *challenger* climbing from the level below; the higher-seeded of the pair chooses
-    which challenger to take and the other inherits the rest. Seeds 1 and 2 are seated at the
-    semifinals, whose winners meet in the final — the same finish as the semifinals-scope dual
-    gauntlet. For an odd field the two lowest seeds contest a play-in so the bottom level still
-    has exactly two challengers; an even field feeds the two lowest seeds in directly.
-    """
-    ordered = sorted(participants, key=lambda p: p.seed)
-    n = len(ordered)
-    if n <= 3:
-        # Too few players to choose round by round; the standard dual gauntlet already covers
-        # the 2- and 3-player shapes (a single final / one byed semifinalist).
-        return _build_dual_gauntlet(participants, opponent_choice=True, choice_scope="round")
-
-    id_gen = IdGen()
-    matches: list[Match] = []
-    by_id: dict[int, Match] = {}
-    round_no = 0
-
-    odd = n % 2 == 1
-    # Number of seated choice levels (each seats two seeds), from the semifinals down.
-    levels = (n - 3) // 2 if odd else n // 2 - 1
-
-    # --- bottom challengers: the two inputs to the lowest seated level ---
-    if odd:
-        round_no += 1
-        play_in = make_match(
-            id_gen(), round_no, BracketSide.WINNERS, ordered[n - 1].id, ordered[n - 2].id
-        )
-        matches.append(play_in)
-        by_id[play_in.id] = play_in
-        # Challenger A = winner of the play-in; challenger B = the next seed up (enters directly).
-        challengers: list[_Challenger] = [("feeder", play_in.id), ("seed", ordered[n - 3])]
-    else:
-        challengers = [("seed", ordered[n - 1]), ("seed", ordered[n - 2])]
-
-    # --- seated levels, bottom (level `levels`) up to the semifinals (level 1) ---
-    for level in range(levels, 0, -1):
-        round_no += 1
-        seat_high = ordered[2 * level - 2]  # better seed -> the chooser
-        seat_low = ordered[2 * level - 1]
-        chooser = make_match(id_gen(), round_no, BracketSide.WINNERS, seat_high.id, None)
-        other = make_match(id_gen(), round_no, BracketSide.WINNERS, seat_low.id, None)
-        _attach_challenger(chooser, challengers[0], by_id)
-        _attach_challenger(other, challengers[1], by_id)
-        chooser.metadata = {"gauntlet_role": "chooser", "choice_other_match": other.id}
-        other.metadata = {"gauntlet_role": "other"}
-        for match in (chooser, other):
-            matches.append(match)
-            by_id[match.id] = match
-        # This level's two winners are the challengers for the next level up.
-        challengers = [("feeder", chooser.id), ("feeder", other.id)]
-
-    # --- final: the two semifinal winners meet ---
-    round_no += 1
-    final = make_match(id_gen(), round_no, BracketSide.WINNERS)
-    _attach_challenger(final, challengers[0], by_id)
-    _attach_challenger(final, challengers[1], by_id)
-    matches.append(final)
-    by_id[final.id] = final
-
-    total_rounds = round_no
-    rounds: list[Round] = []
-    for rn in range(1, total_rounds + 1):
-        ids = [m.id for m in matches if m.round_number == rn]
-        rounds.append(
-            Round(
-                number=rn,
-                bracket_side=BracketSide.WINNERS,
-                match_ids=ids,
-                name=gauntlet_round_name(rn, total_rounds, "dual"),
-            )
-        )
-
-    bracket = Bracket(
-        format="gauntlet",
-        state=BracketState.PUBLISHED,
-        participants=list(participants),
-        matches=matches,
-        rounds=rounds,
-        config={"style": "dual", "opponent_choice": True, "choice_scope": "round"},
-    )
-    settle_initial(bracket)
-    refresh_gauntlet_round_choices(bracket)
-    return bracket
-
-
 def generate_gauntlet(
     participants: list[Participant],
     style: Literal["single", "dual"],
     opponent_choice: bool = False,
     choice_scope: Literal["round", "semifinals"] = "round",
 ) -> Bracket:
-    """Generate a single-sided (linear chain) or dual-sided (two-bracket) gauntlet."""
+    """Generate a single-sided (linear chain) or dual-sided (two-ladder) gauntlet."""
     validate_participants(participants)
     if style == "single":
         if opponent_choice:
@@ -298,8 +248,6 @@ def generate_gauntlet(
             )
         return _build_single_gauntlet(participants)
     if style == "dual":
-        if opponent_choice and choice_scope == "round":
-            return _build_dual_gauntlet_round(participants)
         return _build_dual_gauntlet(participants, opponent_choice, choice_scope)
     raise ValidationError(f"Unknown gauntlet style: {style!r}")
 

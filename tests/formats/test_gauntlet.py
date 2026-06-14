@@ -74,6 +74,16 @@ def test_dual_gauntlet_completes_various_sizes(n: int) -> None:
     assert pb.get_winner(bracket) is not None
 
 
+@pytest.mark.parametrize("n", [4, 6, 8, 9, 10, 12, 14, 16, 24])
+def test_dual_gauntlet_stays_two_games_per_round(n: int) -> None:
+    # A double gauntlet is two climbing ladders: it must never widen into a regular bracket,
+    # so no round ever holds more than two games regardless of field size.
+    bracket = pb.generate_gauntlet(make_participants(n), style="dual")
+    for r in bracket.rounds:
+        assert len(r.match_ids) <= 2
+    assert len(bracket.matches) == n - 1
+
+
 def test_dual_gauntlet_two_players_is_single_final() -> None:
     bracket = pb.generate_gauntlet(make_participants(2), style="dual")
     assert len(bracket.matches) == 1

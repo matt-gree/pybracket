@@ -542,11 +542,14 @@ def bracket_from_json(json_str: str) -> Bracket
   - Data model: use `round_number` to represent position in the chain. Each round has exactly
     one match.
 
-- **Dual-sided gauntlet**: seeds 1 and 2 are placed at the top of each bracket half at the
-  semifinal position. Lower seeds fill the earlier rounds.
-  - With N participants, seeds 3–N play out the sub-bracket. Seeds 1 and 2 enter at semis.
-  - Treat as a single-elim bracket where seeds 1 and 2 receive enough byes to reach the semis.
-  - With odd lower-seed counts, standard bye rules apply.
+- **Dual-sided gauntlet**: seeds 1 and 2 are seated at the two semifinals; everyone below
+  climbs a two-ladder "staircase".
+  - Two seeds are seated at every level (the two best not yet placed), each facing a challenger
+    climbing from the level below; their winners are the next level's challengers. This keeps
+    exactly two games per round at every field size — it never widens into a regular
+    sub-bracket (which would mean 4+ first-round games once the lower field passes ~8 players).
+  - An odd field gives the two lowest seeds a play-in so the bottom level still has exactly two
+    challengers.
 
 - **Opponent choice** (if `opponent_choice=True`):
   - When `choice_scope='round'`: after each round, the higher seed may choose which opponent

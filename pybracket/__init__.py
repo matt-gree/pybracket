@@ -52,6 +52,12 @@ from .models import (
     Standing,
 )
 from .operations import reseed, set_best_of
+from .seeding import (
+    ByeCompletion,
+    ByeProfile,
+    allowable_bye_options,
+    complete_bye_rounds,
+)
 from .tiebreakers import (
     BuchholzTiebreaker,
     HeadToHeadTiebreaker,
@@ -94,6 +100,11 @@ __all__ = [
     "generate_pools",
     "generate_gauntlet",
     "PoolsBracket",
+    # Byes
+    "allowable_bye_options",
+    "complete_bye_rounds",
+    "ByeCompletion",
+    "ByeProfile",
     # Result reporting
     "report_result",
     "report_choice",

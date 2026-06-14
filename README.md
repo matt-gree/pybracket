@@ -77,6 +77,15 @@ pools = pb.reseed_pools_to_bracket(pools)
 ```python
 # Seeds 1-2 enter in round 3, seeds 3-4 enter in round 2, seeds 5-8 play round 1.
 bracket = pb.generate_single_elim(players, bye_rounds={1: 2, 2: 2, 3: 1, 4: 1})
+
+# Specify only the byes you care about — the engine fills in the rest. For a 16-team field,
+# "the top four get a double bye" auto-completes with single byes for seeds 5-8.
+bracket = pb.generate_single_elim(players_16, bye_rounds={1: 2, 2: 2, 3: 2, 4: 2})
+bracket.config["bye_rounds_added"]  # -> {5: 1, 6: 1, 7: 1, 8: 1}
+
+# Discover the bye configurations a field size supports (Big-12 style, etc.).
+for option in pb.allowable_bye_options(14):
+    print(option.rounds, option.label())  # e.g. "4×double, 6×single, 4 play in"
 ```
 
 ### Correcting a result

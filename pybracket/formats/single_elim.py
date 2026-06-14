@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from ..advancement.engine import settle_initial
 from ..errors import ValidationError
@@ -11,6 +11,13 @@ from ..models.participant import Participant
 from ..models.round import Round
 from ..naming.round_names import single_elim_round_name
 from ..seeding.algorithms import assert_protected_seeds, seed_slots, standard_bracket_positions
+from ..seeding.byes import (
+    ByeCompletion,
+    ByeNode,
+    MatchNode,
+    build_bye_plan,
+    complete_bye_rounds,
+)
 from ..utils.math import next_power_of_2
 from ..utils.validation import validate_participants
 from .base import IdGen, build_standard_bracket, make_match
@@ -92,11 +99,17 @@ def generate_single_elim(
     ``bye_rounds`` maps a seed number to the number of *rounds* that seed skips before its
     first match. ``None`` (the default) keeps the classic behaviour: the field is rounded up
     to the next power of two and the top seeds receive a single round of byes for any empty
-    slots. Providing an explicit mapping lets the TO build multi-round byes — for example
-    ``{1: 2, 2: 1, 3: 1}`` means seed 1 enters in round 3, seeds 2 and 3 enter in round 2, and
-    everyone else plays a normal round 1. With enough byes the bracket degenerates into a
-    gauntlet (each higher seed gets exactly one more bye than the next), which the library
-    treats as a valid point on the same continuum.
+    slots.
+
+    Providing a mapping lets the TO specify only the byes they care about — e.g.
+    ``{1: 2, 2: 2, 3: 2, 4: 2}`` for "the top four seeds get a double bye". The engine completes
+    the configuration, adding the minimal extra byes needed to reach a workable bracket (here,
+    single byes for seeds 5–8), and records what it added in ``config["bye_rounds_added"]``.
+    The completed per-seed map respects seeding (seeds 1 and 2 land in opposite halves) and is
+    stored in ``config["bye_rounds"]``. With enough byes the bracket degenerates into a gauntlet
+    (each higher seed gets exactly one more bye than the next), a valid point on the same
+    continuum. Use :func:`pybracket.allowable_bye_options` to discover the configurations a
+    field size supports.
     """
     validate_participants(participants)
 
@@ -131,50 +144,13 @@ def generate_single_elim(
 # N-level byes
 # --------------------------------------------------------------------------------------
 
-# An item feeding a round's match: a seed entering for the first time, or the winner of a
-# previously-built match (a "carry").
-_Incoming = tuple[str, Any]  # ("seed", Participant) | ("feeder", match_id)
+# The result of emitting a plan node: a seated seed, or the winner of an already-built match.
+_Emitted = tuple[str, Any]  # ("seed", Participant) | ("match", match_id)
 
 
-def _validate_bye_rounds(
-    ordered: list[Participant], bye_rounds: dict[int, int]
-) -> dict[int, int]:
-    """Validate the raw mapping and return per-seed bye counts for every participant."""
-    seeds_present = {p.seed for p in ordered}
-    for seed, count in bye_rounds.items():
-        if isinstance(count, bool) or not isinstance(count, int):
-            raise ValidationError(
-                f"bye_rounds value for seed {seed} must be an integer, got {count!r}."
-            )
-        if count < 0:
-            raise ValidationError(
-                f"bye_rounds value for seed {seed} must be non-negative, got {count}."
-            )
-        if seed not in seeds_present:
-            raise ValidationError(
-                f"bye_rounds references seed {seed}, which has no matching participant."
-            )
-
-    byes_of = {p.seed: int(bye_rounds.get(p.seed, 0)) for p in ordered}
-
-    # Byes must be monotonically non-increasing by seed: a worse seed can never receive more
-    # byes than a better one (otherwise the structure no longer protects the top seeds).
-    previous: int | None = None
-    for p in ordered:  # ascending seed order (best first)
-        current = byes_of[p.seed]
-        if previous is not None and current > previous:
-            raise ValidationError(
-                f"bye_rounds must be non-increasing by seed: seed {p.seed} is given more byes "
-                f"({current}) than a better-ranked seed ({previous})."
-            )
-        previous = current
-
-    return byes_of
-
-
-def _attach_incoming(match: Match, item: _Incoming, by_id: dict[int, Match]) -> None:
-    """Either place an entering seed into the match, or wire a feeder's winner toward it."""
-    kind, value = item
+def _attach_emitted(match: Match, child: _Emitted, by_id: dict[int, Match]) -> None:
+    """Seat an entering seed in the match, or wire a feeder match's winner toward it."""
+    kind, value = child
     if kind == "seed":
         if match.participant1_id is None:
             match.participant1_id = value.id
@@ -184,70 +160,62 @@ def _attach_incoming(match: Match, item: _Incoming, by_id: dict[int, Match]) -> 
         by_id[value].next_winner_match_id = match.id
 
 
+def _emit_plan(
+    node: ByeNode,
+    by_seed: dict[int, Participant],
+    id_gen: IdGen,
+    matches: list[Match],
+    by_id: dict[int, Match],
+) -> _Emitted:
+    """Walk a bye plan left-first, creating a match per internal node.
+
+    Visiting the left subtree before the right (and creating each parent after its children)
+    assigns match ids in top-to-bottom order within every round, so the emitted bracket renders
+    cleanly: sibling matches stay adjacent and feed the same parent.
+    """
+    if node[0] == "seed":
+        return ("seed", by_seed[node[1]])
+    _, round_number, left, right = cast("MatchNode", node)
+    left_emitted = _emit_plan(left, by_seed, id_gen, matches, by_id)
+    right_emitted = _emit_plan(right, by_seed, id_gen, matches, by_id)
+    match = make_match(id_gen(), round_number, BracketSide.WINNERS)
+    _attach_emitted(match, left_emitted, by_id)
+    _attach_emitted(match, right_emitted, by_id)
+    matches.append(match)
+    by_id[match.id] = match
+    return ("match", match.id)
+
+
 def _build_bye_rounds_single_elim(
     participants: list[Participant],
     bye_rounds: dict[int, int],
     third_place_match: bool,
 ) -> Bracket:
-    """Build a single-elim tree bottom-up from an explicit per-seed bye configuration.
+    """Build a single-elim tree from a (possibly partial) per-seed bye configuration.
 
-    Round 1 pairs the participants with zero byes. Round ``r`` pairs the winners carried over
-    from round ``r - 1`` with the participants whose bye count is exactly ``r - 1`` (they enter
-    here for the first time). Entering seeds, being better-ranked than any climber, are folded
-    against the carried winners (strongest vs weakest) so the top seeds stay apart. A round
-    whose participant count is odd is structurally impossible and raises ``ValidationError``.
+    The request is completed into a configuration that tiles a perfect ``2**rounds`` bracket
+    (see :func:`pybracket.complete_bye_rounds`), then laid out top-down in standard seed order.
+    A clean power-of-two field with no byes falls through to the ordinary builder.
     """
     ordered = sorted(participants, key=lambda p: p.seed)
-    byes_of = _validate_bye_rounds(ordered, bye_rounds)
-    max_bye = max(byes_of.values())
+    completion: ByeCompletion = complete_bye_rounds(len(ordered), bye_rounds)
+    config = _bye_config(third_place_match, completion)
 
-    entering_by_round: dict[int, list[Participant]] = {}
-    for p in ordered:  # ascending seed keeps each entering list strongest-first
-        entering_by_round.setdefault(byes_of[p.seed], []).append(p)
+    if max(completion.completed.values(), default=0) == 0:
+        # No byes at all: identical to the standard power-of-two bracket.
+        slots = seed_slots(ordered, next_power_of_2(len(ordered)))
+        return build_single_elim(
+            slots, participants, third_place_match=third_place_match, config=config
+        )
 
+    by_seed = {p.seed: p for p in ordered}
+    plan = build_bye_plan(completion.completed)
     id_gen = IdGen()
     matches: list[Match] = []
     by_id: dict[int, Match] = {}
-    carries: list[int] = []  # match ids whose winners advance into the next round
-    round_number = 0
-
-    while True:
-        round_number += 1
-        entering = entering_by_round.get(round_number - 1, [])
-        incoming: list[_Incoming] = [("seed", p) for p in entering]
-        incoming += [("feeder", mid) for mid in carries]
-        total = len(incoming)
-
-        if total == 0:
-            raise ValidationError(
-                f"bye_rounds is invalid: round {round_number} has no participants."
-            )
-        if total % 2 != 0:
-            raise ValidationError(
-                f"bye_rounds is invalid: round {round_number} would have {total} active "
-                "participants, which cannot be paired evenly. Adjust the bye counts so every "
-                "round has an even number of players (a seed may have at most one more bye "
-                "than the seed below it)."
-            )
-
-        # Fold strongest against weakest: incoming[i] meets incoming[n-1-i].
-        new_carries: list[int] = []
-        for i in range(total // 2):
-            m = make_match(id_gen(), round_number, BracketSide.WINNERS)
-            _attach_incoming(m, incoming[i], by_id)
-            _attach_incoming(m, incoming[total - 1 - i], by_id)
-            matches.append(m)
-            by_id[m.id] = m
-            new_carries.append(m.id)
-        carries = new_carries
-
-        if len(carries) == 1 and (round_number - 1) >= max_bye:
-            break
-        if round_number > len(ordered) + 1:  # safety: should be unreachable once validated
-            raise ValidationError("bye_rounds does not resolve to a single champion.")
-
-    total_rounds = round_number
-    final_id = carries[0]
+    root = _emit_plan(plan, by_seed, id_gen, matches, by_id)
+    final_id = root[1]
+    total_rounds = completion.rounds
 
     rounds: list[Round] = []
     for rn in range(1, total_rounds + 1):
@@ -290,7 +258,21 @@ def _build_bye_rounds_single_elim(
         participants=list(participants),
         matches=matches,
         rounds=rounds,
-        config={"third_place_match": third_place_match, "bye_rounds": dict(byes_of)},
+        config=config,
     )
     settle_initial(bracket)
     return bracket
+
+
+def _bye_config(third_place_match: bool, completion: ByeCompletion) -> dict[str, Any]:
+    """Config block recording the completed byes and what the engine added to the request."""
+    config: dict[str, Any] = {
+        "third_place_match": third_place_match,
+        "bye_rounds": dict(completion.completed),
+    }
+    if completion.added:
+        config["bye_rounds_requested"] = {
+            s: completion.requested.get(s, 0) for s in sorted(completion.requested)
+        }
+        config["bye_rounds_added"] = dict(completion.added)
+    return config

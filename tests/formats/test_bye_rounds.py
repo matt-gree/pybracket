@@ -67,6 +67,87 @@ def test_bye_rounds_stored_as_full_per_seed_map() -> None:
     assert bracket.config["bye_rounds"] == {1: 2, 2: 1, 3: 0, 4: 0}
 
 
+# --- seeding & layout ----------------------------------------------------------------------
+
+
+def _winner_feeders(bracket: pb.Bracket, match_id: int) -> list[int]:
+    return [m.id for m in bracket.matches if m.next_winner_match_id == match_id]
+
+
+def _seed_first_match(bracket: pb.Bracket, seed: int) -> int:
+    participant = next(p.id for p in bracket.participants if p.seed == seed)
+    return min(
+        m.id
+        for m in bracket.matches
+        if participant in (m.participant1_id, m.participant2_id)
+    )
+
+
+def _ancestor_at_round(bracket: pb.Bracket, match_id: int, target_round: int) -> int:
+    """Walk winner pointers up from a match until reaching the match in ``target_round``."""
+    by_id = {m.id: m for m in bracket.matches}
+    current = match_id
+    while by_id[current].round_number < target_round:
+        nxt = by_id[current].next_winner_match_id
+        assert nxt is not None
+        current = nxt
+    return current
+
+
+def test_double_byes_respect_seeding_opposite_halves() -> None:
+    # 16-field, top 4 double byes + 4 single byes. Seeds 1 & 2 must be in opposite halves
+    # (meet only in the final); the semifinals must pair (1 vs 4) and (2 vs 3).
+    bracket = pb.generate_single_elim(
+        make_participants(16), bye_rounds={1: 2, 2: 2, 3: 2, 4: 2}
+    )
+    final = next(m.id for m in bracket.matches if m.next_winner_match_id is None)
+    semis = _winner_feeders(bracket, final)
+    assert len(semis) == 2
+    semi_of = {
+        seed: _ancestor_at_round(bracket, _seed_first_match(bracket, seed), 4)
+        for seed in (1, 2, 3, 4)
+    }
+    # 1 with 4, 2 with 3; the two pairs are the two different semifinals.
+    assert semi_of[1] == semi_of[4]
+    assert semi_of[2] == semi_of[3]
+    assert semi_of[1] != semi_of[2]
+    assert {semi_of[1], semi_of[2]} == set(semis)
+
+
+def _winner_subtree(bracket: pb.Bracket, root_id: int) -> list[int]:
+    feeders: dict[int, list[int]] = {}
+    for m in bracket.matches:
+        if m.next_winner_match_id is not None:
+            feeders.setdefault(m.next_winner_match_id, []).append(m.id)
+    out: list[int] = []
+    stack = [root_id]
+    while stack:
+        node = stack.pop()
+        out.append(node)
+        stack.extend(feeders.get(node, []))
+    return out
+
+
+@pytest.mark.parametrize(
+    "n,bye",
+    [
+        (16, {1: 2, 2: 2, 3: 2, 4: 2}),
+        (8, {1: 2, 2: 2, 3: 1, 4: 1}),
+        (14, {1: 2, 2: 2, 3: 2, 4: 2}),
+        (16, {**dict.fromkeys(range(1, 5), 2), **dict.fromkeys(range(5, 9), 1)}),
+    ],
+)
+def test_round_ordering_is_render_ready(n: int, bye: dict[int, int]) -> None:
+    # Left-first ids make every winner-subtree a contiguous id range ending at its root, so a
+    # tree layout draws the bracket without sibling subtrees interleaving (no crossed lines).
+    bracket = pb.generate_single_elim(make_participants(n), bye_rounds=bye)
+    for m in bracket.matches:
+        if m.metadata.get("consolation"):
+            continue
+        subtree = sorted(_winner_subtree(bracket, m.id))
+        assert subtree == list(range(subtree[0], m.id + 1))
+
+
 # --- the gauntlet continuum ----------------------------------------------------------------
 
 
@@ -128,10 +209,32 @@ def test_third_place_rejected_when_final_has_single_feeder() -> None:
 # --- validation ----------------------------------------------------------------------------
 
 
-def test_odd_round_rejected() -> None:
-    # seeds 4-8 (5 players) cannot pair in round 1.
+def test_incomplete_byes_are_auto_completed() -> None:
+    # A request that does not tile a clean bracket is completed by adding the minimal extra
+    # byes, rather than rejected: {1:2, 2:1, 3:1} for N=8 needs single byes for seeds 4-6.
+    bracket = pb.generate_single_elim(make_participants(8), bye_rounds={1: 2, 2: 1, 3: 1})
+    assert bracket.config["bye_rounds"] == {1: 2, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 0, 8: 0}
+    assert bracket.config["bye_rounds_added"] == {4: 1, 5: 1, 6: 1}
+    assert bracket.config["bye_rounds_requested"] == {1: 2, 2: 1, 3: 1}
+    real = [m for m in bracket.matches if not m.metadata.get("consolation")]
+    assert len(real) == 7  # N - 1, no phantom byes
+    bracket = simulate(bracket)
+    assert pb.get_winner(bracket).id == 1
+
+
+def test_top_seeds_double_bye_auto_completes_with_single_byes() -> None:
+    # The headline case: the TO asks only for the top four to get double byes; the engine fills
+    # in the single byes (seeds 5-8) needed to make a 16-field tile a bracket.
+    bracket = pb.generate_single_elim(
+        make_participants(16), bye_rounds={1: 2, 2: 2, 3: 2, 4: 2}
+    )
+    assert bracket.config["bye_rounds_added"] == {5: 1, 6: 1, 7: 1, 8: 1}
+
+
+def test_overspecified_byes_rejected() -> None:
+    # Byes that cannot be honoured by the field (round 1 would be empty) are rejected.
     with pytest.raises(pb.ValidationError):
-        pb.generate_single_elim(make_participants(8), bye_rounds={1: 2, 2: 1, 3: 1})
+        pb.generate_single_elim(make_participants(4), bye_rounds={1: 3})
 
 
 def test_negative_byes_rejected() -> None:

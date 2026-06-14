@@ -13,6 +13,12 @@ from .algorithms import (
     seed_slots,
     standard_bracket_positions,
 )
+from .byes import (
+    ByeCompletion,
+    ByeProfile,
+    allowable_bye_options,
+    complete_bye_rounds,
+)
 from .pool_seeding import (
     pool_sizes,
     qualifier_seed_order,
@@ -32,6 +38,10 @@ __all__ = [
     "reverse_half_shift",
     "seed_slots",
     "standard_bracket_positions",
+    "ByeCompletion",
+    "ByeProfile",
+    "allowable_bye_options",
+    "complete_bye_rounds",
     "pool_sizes",
     "qualifier_seed_order",
     "qualifier_slot_order",
