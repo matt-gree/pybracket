@@ -23,6 +23,7 @@ __all__ = [
     "PoolsBracket",
     "generate_pools",
     "draft_pools_to_bracket",
+    "preview_pools_bracket",
     "publish_bracket",
     "reseed_pools_to_bracket",
 ]
@@ -119,43 +120,21 @@ def _build_elimination(
     raise ValidationError(f"Unsupported pool bracket_format: {bracket_format!r}")
 
 
-def draft_pools_to_bracket(
+def _draft_from_slots(
+    slots: list[Participant | None],
     pools_bracket: PoolsBracket,
-    new_seed_order: list[Any] | None = None,
+    advancing: list[Participant],
+    *,
+    preview: bool,
 ) -> PoolsBracket:
-    """Seed survivors from the finished pool standings into a DRAFT elimination bracket.
+    """Reseed the occupied slots 1..N (by slot order) and build the DRAFT elimination bracket.
 
-    The bracket is fully built and settled but left in ``BracketState.DRAFT`` so the TO can
-    review (and, by passing ``new_seed_order``, reorder) the seeding before publishing it for
-    play. Call :func:`publish_bracket` to lock it in. ``new_seed_order`` is a list of advancing
-    participant ids in the desired seed order (seed 1 first).
+    Shared by :func:`draft_pools_to_bracket` (real qualifiers) and :func:`preview_pools_bracket`
+    (origin placeholders); ``preview`` is recorded in config so callers can tell them apart.
     """
-    for pool in pools_bracket.pools:
-        if not is_complete(pool):
-            raise BracketStateError("All pool matches must be complete before reseeding.")
-
-    advancement_count = int(pools_bracket.config["advancement_count"])
-    snake_shuffle = bool(pools_bracket.config.get("snake_shuffle", True))
     bracket_format = str(pools_bracket.config["bracket_format"])
     bracket_kwargs = dict(pools_bracket.config.get("bracket_kwargs", {}))
 
-    by_id = {p.id: p for p in pools_bracket.participants}
-    ranked_by_pool: list[list[Participant]] = []
-    for pool in pools_bracket.pools:
-        standings = get_standings(pool)
-        advancers = [by_id[s.participant_id] for s in standings[:advancement_count]]
-        ranked_by_pool.append(advancers)
-
-    if new_seed_order is not None:
-        ordered = [by_id[pid] for pid in new_seed_order]
-        size = next_power_of_2(len(ordered))
-        slots = seed_slots(ordered, size)
-        advancing = ordered
-    else:
-        slots = qualifier_slot_order(ranked_by_pool, advancement_count, snake_shuffle)
-        advancing = [p for p in slots if p is not None]
-
-    # Reseed advancing participants 1..N for display, following the elimination slot order.
     seed_counter = 1
     seen: set[Any] = set()
     reseeded: list[Participant] = []
@@ -174,12 +153,98 @@ def draft_pools_to_bracket(
 
     new_config = dict(pools_bracket.config)
     new_config["advancing_ids"] = [p.id for p in advancing]
+    new_config["preview"] = preview
     return PoolsBracket(
         pools=list(pools_bracket.pools),
         elimination=elimination,
         participants=list(pools_bracket.participants),
         config=new_config,
     )
+
+
+def draft_pools_to_bracket(
+    pools_bracket: PoolsBracket,
+    new_seed_order: list[Any] | None = None,
+) -> PoolsBracket:
+    """Seed survivors from the finished pool standings into a DRAFT elimination bracket.
+
+    The bracket is fully built and settled but left in ``BracketState.DRAFT`` so the TO can
+    review (and, by passing ``new_seed_order``, reorder) the seeding before publishing it for
+    play. Call :func:`publish_bracket` to lock it in. ``new_seed_order`` is a list of advancing
+    participant ids in the desired seed order (seed 1 first).
+    """
+    for pool in pools_bracket.pools:
+        if not is_complete(pool):
+            raise BracketStateError("All pool matches must be complete before reseeding.")
+
+    advancement_count = int(pools_bracket.config["advancement_count"])
+    snake_shuffle = bool(pools_bracket.config.get("snake_shuffle", True))
+
+    by_id = {p.id: p for p in pools_bracket.participants}
+    ranked_by_pool: list[list[Participant]] = []
+    for pool in pools_bracket.pools:
+        standings = get_standings(pool)
+        advancers = [by_id[s.participant_id] for s in standings[:advancement_count]]
+        ranked_by_pool.append(advancers)
+
+    if new_seed_order is not None:
+        ordered = [by_id[pid] for pid in new_seed_order]
+        size = next_power_of_2(len(ordered))
+        slots = seed_slots(ordered, size)
+        advancing = ordered
+    else:
+        slots = qualifier_slot_order(ranked_by_pool, advancement_count, snake_shuffle)
+        advancing = [p for p in slots if p is not None]
+
+    return _draft_from_slots(slots, pools_bracket, advancing, preview=False)
+
+
+def _pool_label(index: int) -> str:
+    """0 -> 'A', 1 -> 'B', ..., 25 -> 'Z', 26 -> 'AA' (matches the studio's pool labels)."""
+    label = ""
+    n = index
+    while True:
+        label = chr(65 + n % 26) + label
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return label
+
+
+def _placeholder(pool_index: int, place: int, advancement_count: int) -> Participant:
+    """A stand-in qualifier for the preview bracket, naming the pool finish it represents.
+
+    Ids are negative so they can never collide with the real participants (always positive),
+    and the origin is carried in ``stats`` so a UI can label the slot however it likes.
+    """
+    return Participant(
+        id=-(pool_index * advancement_count + place),
+        seed=place,
+        name=f"Pool {_pool_label(pool_index)} #{place}",
+        stats={"origin_pool": pool_index, "origin_place": place, "placeholder": True},
+    )
+
+
+def preview_pools_bracket(pools_bracket: PoolsBracket) -> PoolsBracket:
+    """Build a preliminary elimination bracket *before* the pools finish.
+
+    Every slot is filled with a placeholder qualifier that names its origin ("Pool A #1") and
+    records it in ``stats``, using the same snake-seed mapping the real draft uses — so the TO
+    can see exactly where each pool finisher will land. The bracket is ``DRAFT`` and flagged
+    ``config["preview"] = True``; rebuild it for real with :func:`draft_pools_to_bracket` once
+    the pools are complete. Unlike the real draft, this never requires the pools to be played.
+    """
+    num_pools = int(pools_bracket.config["num_pools"])
+    advancement_count = int(pools_bracket.config["advancement_count"])
+    snake_shuffle = bool(pools_bracket.config.get("snake_shuffle", True))
+
+    ranked_by_pool: list[list[Participant]] = [
+        [_placeholder(pool_index, place, advancement_count) for place in range(1, advancement_count + 1)]
+        for pool_index in range(num_pools)
+    ]
+    slots = qualifier_slot_order(ranked_by_pool, advancement_count, snake_shuffle)
+    advancing = [p for p in slots if p is not None]
+    return _draft_from_slots(slots, pools_bracket, advancing, preview=True)
 
 
 def publish_bracket(pools_bracket: PoolsBracket) -> PoolsBracket:

@@ -34,6 +34,7 @@ from .formats import (
     generate_round_robin,
     generate_single_elim,
     generate_swiss,
+    preview_pools_bracket,
     publish_bracket,
     reseed_pools_to_bracket,
 )
@@ -124,6 +125,7 @@ __all__ = [
     # Reseeding / config
     "reseed",
     "draft_pools_to_bracket",
+    "preview_pools_bracket",
     "publish_bracket",
     "reseed_pools_to_bracket",
     "set_best_of",

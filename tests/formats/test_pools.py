@@ -185,3 +185,78 @@ def test_draft_reorder_changes_seeding_before_publish() -> None:
     published = pb.publish_bracket(reordered)
     published.elimination = simulate(published.elimination)
     assert pb.is_complete(published.elimination)
+
+
+# --- preview (preliminary bracket before pools finish) ------------------------------------
+
+
+def test_preview_before_pools_complete() -> None:
+    pools = pb.generate_pools(make_participants(12), num_pools=3, advancement_count=2)
+    # Unlike draft/reseed, preview never requires the pools to be played.
+    preview = pb.preview_pools_bracket(pools)
+    assert preview.config["preview"] is True
+    assert preview.elimination.state is BracketState.DRAFT
+    assert len(preview.elimination.participants) == 6  # 3 pools * 2 advancing
+    assert all(p.id < 0 for p in preview.elimination.participants)
+    assert all(p.stats.get("placeholder") for p in preview.elimination.participants)
+    names = {p.name for p in preview.elimination.participants}
+    assert "Pool A #1" in names and "Pool C #2" in names
+    # The pools are carried over untouched.
+    assert all(not pb.is_complete(p) for p in preview.pools)
+
+
+def test_draft_records_non_preview() -> None:
+    pools = _play_pools(pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2))
+    assert pb.draft_pools_to_bracket(pools).config["preview"] is False
+
+
+def test_preview_avoids_same_pool_round_one() -> None:
+    preview = pb.preview_pools_bracket(
+        pb.generate_pools(
+            make_participants(16), num_pools=4, advancement_count=2, bracket_format="single_elim"
+        )
+    )
+    origin = {p.id: p.stats["origin_pool"] for p in preview.elimination.participants}
+    for m in preview.elimination.matches:
+        if m.round_number == 1 and m.participant1_id is not None and m.participant2_id is not None:
+            assert origin[m.participant1_id] != origin[m.participant2_id]
+
+
+def test_preview_double_elim_shape() -> None:
+    preview = pb.preview_pools_bracket(
+        pb.generate_pools(
+            make_participants(8), num_pools=2, advancement_count=2, bracket_format="double_elim"
+        )
+    )
+    assert preview.elimination.format == "double_elim"
+    assert len(preview.elimination.participants) == 4
+
+
+def test_preview_seeding_matches_real_draft_positions() -> None:
+    """Each (pool, place) origin lands in the same slot the real draft would place it."""
+    pools = pb.generate_pools(
+        make_participants(12), num_pools=3, advancement_count=2, bracket_format="single_elim"
+    )
+    preview = pb.preview_pools_bracket(pools)
+
+    played = _play_pools(pools)
+    origin: dict[int, tuple[int, int]] = {}
+    for pool_index, pool in enumerate(played.pools):
+        for place, standing in enumerate(pb.get_standings(pool)[:2], start=1):
+            origin[standing.participant_id] = (pool_index, place)
+    drafted = pb.draft_pools_to_bracket(played)
+
+    prev_origin = {
+        p.id: (p.stats["origin_pool"], p.stats["origin_place"])
+        for p in preview.elimination.participants
+    }
+
+    def pairs(bracket: pb.Bracket, lookup: dict[int, tuple[int, int]]):
+        out = []
+        for m in sorted(
+            (m for m in bracket.matches if m.round_number == 1), key=lambda m: m.id
+        ):
+            out.append((lookup.get(m.participant1_id), lookup.get(m.participant2_id)))
+        return out
+
+    assert pairs(preview.elimination, prev_origin) == pairs(drafted.elimination, origin)

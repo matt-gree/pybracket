@@ -7,6 +7,7 @@ from .pools import (
     PoolsBracket,
     draft_pools_to_bracket,
     generate_pools,
+    preview_pools_bracket,
     publish_bracket,
     reseed_pools_to_bracket,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "generate_round_robin",
     "generate_single_elim",
     "generate_swiss",
+    "preview_pools_bracket",
     "publish_bracket",
     "reseed_pools_to_bracket",
 ]
