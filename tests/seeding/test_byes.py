@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pybracket as pb
 import pytest
-from pybracket.seeding.byes import build_bye_plan
+from pybracket.seeding.byes import build_bye_plan, expand_byes_to_slots
 from pybracket.utils.math import is_power_of_2
 
 from tests.helpers import make_participants
@@ -106,3 +106,32 @@ def test_no_bye_plan_reproduces_standard_first_round_pairings() -> None:
         }
 
     assert first_round_pairs(classic) == first_round_pairs(byed)
+
+
+# --- expand_byes_to_slots ------------------------------------------------------------------
+
+
+def test_expand_byes_length_is_power_of_two() -> None:
+    completion = pb.complete_bye_rounds(11, dict.fromkeys(range(1, 8), 2))
+    slots = expand_byes_to_slots(completion.completed)
+    assert len(slots) == (1 << completion.rounds)
+
+
+def test_expand_byes_places_each_seed_once_followed_by_empty_block() -> None:
+    byes = pb.complete_bye_rounds(12, {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 1, 8: 1}).completed
+    slots = expand_byes_to_slots(byes)
+    present = [s for s in slots if s is not None]
+    assert sorted(present) == list(range(1, 13))  # every seed exactly once
+    # A seed with b byes is immediately followed by 2**b - 1 empty (bye) slots.
+    for i, seed in enumerate(slots):
+        if seed is not None:
+            block = 1 << byes[seed]
+            assert slots[i + 1 : i + block] == [None] * (block - 1)
+
+
+def test_expand_byes_top_two_seeds_in_opposite_halves() -> None:
+    slots = expand_byes_to_slots(
+        pb.complete_bye_rounds(12, {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 1, 8: 1}).completed
+    )
+    half = len(slots) // 2
+    assert (1 in slots[:half]) != (2 in slots[:half])

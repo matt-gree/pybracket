@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Callable
+
 import pybracket as pb
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from pybracket import BracketSide, MatchStatus
+from pybracket.advancement.engine import compute_occupant_counts
+from pybracket.formats.double_elim import MAX_DOUBLE_ELIM_BYE_LEVEL
 
 from tests.helpers import make_participants, simulate
 
@@ -172,3 +177,191 @@ def test_protected_seeds_full_simulation() -> None:
     bracket = pb.generate_double_elim(make_participants(8), protected_seeds=4)
     bracket = simulate(bracket)
     assert pb.get_winner(bracket).id == 1
+
+
+# --- custom byes (<= double) ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "n, bye_rounds",
+    [
+        (12, {1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 1, 8: 1}),  # 6x double, 2x single
+        (11, dict.fromkeys(range(1, 8), 2)),  # 7x double
+        (6, {1: 1, 2: 1}),  # standard single byes, requested explicitly
+    ],
+)
+def test_bye_rounds_build_and_simulate(n: int, bye_rounds: dict[int, int]) -> None:
+    bracket = pb.generate_double_elim(make_participants(n), bye_rounds=bye_rounds)
+    assert "bye_rounds" in bracket.config
+    bracket = simulate(bracket)
+    assert pb.is_complete(bracket)
+    assert pb.get_winner(bracket).id == 1
+
+
+def test_bye_rounds_double_byed_seed_enters_third_round() -> None:
+    # Seed 1 gets a double bye: its first *real* (non-bye) winners match is in round 3.
+    bracket = pb.generate_double_elim(
+        make_participants(12), bye_rounds={1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 1, 8: 1}
+    )
+    real_rounds = [
+        m.round_number
+        for m in bracket.matches
+        if m.bracket_side is BracketSide.WINNERS
+        and m.status is not MatchStatus.BYE
+        and 1 in (m.participant1_id, m.participant2_id)
+    ]
+    assert min(real_rounds) == 3
+
+
+def test_bye_rounds_rejects_triple() -> None:
+    # A triple bye tiles for n=10 but exceeds double elimination's supported depth.
+    with pytest.raises(pb.ValidationError):
+        pb.generate_double_elim(
+            make_participants(10), bye_rounds={1: 3, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2}
+        )
+
+
+def test_bye_rounds_rejects_protected_seeds_combo() -> None:
+    with pytest.raises(pb.ValidationError):
+        pb.generate_double_elim(make_participants(12), bye_rounds={1: 1, 2: 1}, protected_seeds=4)
+
+
+# --- bye collapse (compact structure, no phantom matches) ----------------------------------
+
+_CUSTOM_14 = {1: 2, 2: 2, 3: 2, **dict.fromkeys(range(4, 13), 1)}
+
+
+def test_byes_collapse_to_compact_bracket() -> None:
+    # A byed double elim has no bye/phantom matches at all, and its losers bracket starts at
+    # round 1 (not mid-bracket) — the reported "disconnected, no losers round 1" case.
+    bracket = pb.generate_double_elim(make_participants(14), bye_rounds=_CUSTOM_14)
+    assert not any(m.status is MatchStatus.BYE for m in bracket.matches)
+    lb_rounds = sorted(
+        {m.round_number for m in bracket.matches if m.bracket_side is BracketSide.LOSERS}
+    )
+    assert lb_rounds[0] == 1
+    assert pb.get_winner(simulate(bracket)).id == 1
+
+
+def test_standard_nonpoweroftwo_byes_also_collapse() -> None:
+    # Collapse applies to ordinary non-power-of-two fields too, not just custom byes.
+    bracket = pb.generate_double_elim(make_participants(6))
+    assert not any(m.status is MatchStatus.BYE for m in bracket.matches)
+    assert pb.get_winner(simulate(bracket)).id == 1
+
+
+# --- compact-vs-padded equivalence (permanent guard: the two must never diverge) -----------
+#
+# `compact=False` keeps the original power-of-two padded structure; `compact=True` (default)
+# collapses its pass-through byes. The compact form must play *identically* to the padded one —
+# same matchups, same champion — for every supported field/bye configuration and any way the
+# games fall. These tests pin that equivalence so the compactness step can never silently change
+# who plays whom or who wins.
+
+# Winner-pickers that depend only on *which seeds* meet (not match id or order), so the padded
+# and compact brackets make identical choices for the same matchup however the rounds are laid out.
+_STRATEGIES: dict[str, Callable[[int, int], int]] = {
+    "chalk": lambda a, b: min(a, b),  # every favourite wins
+    "all_upsets": lambda a, b: max(a, b),  # every underdog wins (stresses the losers bracket)
+    "mixed": lambda a, b: a if ((a * 31 + b * 17) % 2 == 0) else b,  # deterministic mix
+}
+
+
+def _play(bracket: pb.Bracket, decide: Callable[[int, int], int]) -> pb.Bracket:
+    guard = 0
+    while not pb.is_complete(bracket):
+        guard += 1
+        assert guard < 2000, "simulation did not terminate"
+        ready = pb.get_ready_matches(bracket)
+        assert ready, "no ready matches but bracket is not complete"
+        m = ready[0]
+        bracket = pb.report_result(bracket, m.id, decide(m.participant1_id, m.participant2_id))
+    return bracket
+
+
+def _signature(bracket: pb.Bracket) -> tuple[Counter[frozenset[int]], int]:
+    """The competitive content of a finished bracket, independent of match ids/structure:
+    the multiset of who-played-whom plus the champion."""
+    pairs: Counter[frozenset[int]] = Counter(
+        frozenset((m.participant1_id, m.participant2_id))
+        for m in bracket.matches
+        if m.status is MatchStatus.COMPLETED
+    )
+    return pairs, pb.get_winner(bracket).id
+
+
+def _all_bye_configs() -> list[tuple[int, dict[int, int]]]:
+    cases: list[tuple[int, dict[int, int]]] = []
+    for n in range(4, 25):
+        for option in pb.allowable_bye_options(n, max_bye_level=MAX_DOUBLE_ELIM_BYE_LEVEL):
+            requested = {s: v for s, v in option.to_bye_rounds().items() if v > 0}
+            try:
+                pb.complete_bye_rounds(n, requested)
+            except pb.ValidationError:
+                continue
+            cases.append((n, requested))
+    return cases
+
+
+_BYE_PARAMS = [
+    pytest.param(n, req, id=f"n{n}-" + "_".join(f"{s}x{v}" for s, v in sorted(req.items())))
+    for n, req in _all_bye_configs()
+]
+_STANDARD_NS = [3, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 17, 20, 24]
+
+
+@pytest.mark.parametrize("strategy", list(_STRATEGIES))
+@pytest.mark.parametrize("n, bye_rounds", _BYE_PARAMS)
+def test_compact_plays_identically_to_padded_custom_byes(
+    n: int, bye_rounds: dict[int, int], strategy: str
+) -> None:
+    decide = _STRATEGIES[strategy]
+    padded = pb.generate_double_elim(make_participants(n), bye_rounds=bye_rounds, compact=False)
+    compact = pb.generate_double_elim(make_participants(n), bye_rounds=bye_rounds, compact=True)
+    assert not any(m.status is MatchStatus.BYE for m in compact.matches)
+    assert _signature(_play(padded, decide)) == _signature(_play(compact, decide))
+
+
+@pytest.mark.parametrize("strategy", list(_STRATEGIES))
+@pytest.mark.parametrize("n", _STANDARD_NS)
+def test_compact_plays_identically_to_padded_standard(n: int, strategy: str) -> None:
+    # The default (no bye_rounds) path: ordinary non-power-of-two fields must match too.
+    decide = _STRATEGIES[strategy]
+    padded = pb.generate_double_elim(make_participants(n), compact=False)
+    compact = pb.generate_double_elim(make_participants(n), compact=True)
+    assert not any(m.status is MatchStatus.BYE for m in compact.matches)
+    assert _signature(_play(padded, decide)) == _signature(_play(compact, decide))
+
+
+@pytest.mark.parametrize("n, bye_rounds", _BYE_PARAMS)
+def test_compact_keeps_exactly_the_real_matches(n: int, bye_rounds: dict[int, int]) -> None:
+    # The compact bracket has exactly the padded bracket's *real* matches — those that will host a
+    # two-player contest (occupant count 2), plus the grand-final reset. (Counting by status would
+    # be wrong: an empty losers bye match starts 'pending', only flipping to 'bye' once filled.)
+    padded = pb.generate_double_elim(make_participants(n), bye_rounds=bye_rounds, compact=False)
+    compact = pb.generate_double_elim(make_participants(n), bye_rounds=bye_rounds, compact=True)
+    counts = compute_occupant_counts(padded)
+    kept_in_padded = sum(
+        1
+        for m in padded.matches
+        if counts[m.id] == 2
+        or (m.bracket_side is BracketSide.GRAND_FINAL and m.round_number == 2)
+    )
+    assert kept_in_padded == len(compact.matches)
+    assert not pb.is_complete(compact)
+
+
+def test_compact_param_default_is_true() -> None:
+    byed = pb.generate_double_elim(make_participants(6))
+    assert not any(m.status is MatchStatus.BYE for m in byed.matches)
+
+
+def test_collapse_unwind_roundtrips() -> None:
+    bracket = pb.generate_double_elim(make_participants(14), bye_rounds=_CUSTOM_14)
+    first = pb.get_ready_matches(bracket)[0]
+    winner = first.participant1_id
+    advanced = pb.report_result(bracket, first.id, winner)
+    assert pb.get_match(advanced, first.id).status is MatchStatus.COMPLETED
+    reverted, _ = pb.unwind_result(advanced, first.id)
+    assert pb.get_match(reverted, first.id).status is MatchStatus.READY
+    assert pb.get_match(reverted, first.id).winner_id is None

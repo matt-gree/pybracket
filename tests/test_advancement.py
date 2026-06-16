@@ -77,3 +77,42 @@ def test_bye_counts_tracked_separately() -> None:
     bye_match = [m for m in bracket.matches if m.status is MatchStatus.BYE][0]
     assert bye_match.advancement_type is AdvancementType.BYE
     assert bye_match.winner_id == 1  # top seed received the bye
+
+
+# --- draft / publish lifecycle -------------------------------------------------------------
+
+
+def test_cannot_report_on_draft_bracket() -> None:
+    bracket = pb.generate_single_elim(make_participants(8))
+    bracket.state = pb.BracketState.DRAFT
+    match = pb.get_ready_matches(bracket)[0]
+    with pytest.raises(pb.BracketStateError):
+        pb.report_result(bracket, match.id, match.participant1_id)
+
+
+def test_publish_bracket_starts_play() -> None:
+    bracket = pb.generate_single_elim(make_participants(8))
+    bracket.state = pb.BracketState.DRAFT
+    published = pb.publish_bracket(bracket)
+    assert published.state is pb.BracketState.PUBLISHED
+    match = pb.get_ready_matches(published)[0]
+    advanced = pb.report_result(published, match.id, match.participant1_id)
+    assert pb.get_match(advanced, match.id).status is MatchStatus.COMPLETED
+
+
+def test_publish_requires_draft_state() -> None:
+    bracket = pb.generate_single_elim(make_participants(8))  # PUBLISHED on creation
+    with pytest.raises(pb.BracketStateError):
+        pb.publish_bracket(bracket)
+
+
+def test_publish_preserves_gauntlet_choice_frontier() -> None:
+    # Publishing must re-apply format hooks, or a dual round-choice gauntlet's opponent-choice
+    # frontier is lost (a held match wrongly becomes ready).
+    gauntlet = pb.generate_gauntlet(
+        make_participants(7), style="dual", opponent_choice=True, choice_scope="round"
+    )
+    ready_before = {m.id for m in pb.get_ready_matches(gauntlet)}
+    gauntlet.state = pb.BracketState.DRAFT
+    published = pb.publish_bracket(gauntlet)
+    assert {m.id for m in pb.get_ready_matches(published)} == ready_before

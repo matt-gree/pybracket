@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, overload
 
-from ..advancement.engine import is_complete, settle_initial
+from ..advancement.engine import _apply_format_hooks, is_complete, settle_initial
 from ..errors import BracketStateError, ValidationError
 from ..models.bracket import Bracket
 from ..models.enums import BracketState
@@ -247,25 +247,43 @@ def preview_pools_bracket(pools_bracket: PoolsBracket) -> PoolsBracket:
     return _draft_from_slots(slots, pools_bracket, advancing, preview=True)
 
 
-def publish_bracket(pools_bracket: PoolsBracket) -> PoolsBracket:
-    """Transition a DRAFT elimination bracket to PUBLISHED, locking it in for play.
+@overload
+def publish_bracket(target: Bracket) -> Bracket: ...
+@overload
+def publish_bracket(target: PoolsBracket) -> PoolsBracket: ...
+def publish_bracket(target: Bracket | PoolsBracket) -> Bracket | PoolsBracket:
+    """Transition a DRAFT bracket to PUBLISHED, locking it in for play.
 
-    Re-settles the bracket (resolving construction-time byes and initial statuses) and flips
-    its state to PUBLISHED. The pools and participants are carried over unchanged.
+    Accepts either a plain :class:`Bracket` (e.g. a freshly generated single/double elim held in
+    DRAFT until the organizer starts the tournament) or a :class:`PoolsBracket` (whose DRAFT
+    *elimination* bracket is published once the pools are seeded). In both cases the published
+    bracket is re-settled — construction-time byes and initial statuses are resolved and the
+    PUBLISHED/COMPLETE transition is computed — so play can begin immediately.
     """
-    if pools_bracket.elimination.state is not BracketState.DRAFT:
+    if isinstance(target, Bracket):
+        if target.state is not BracketState.DRAFT:
+            raise BracketStateError("Bracket must be in DRAFT state to publish.")
+        bracket = copy.deepcopy(target)
+        bracket.state = BracketState.PUBLISHED
+        settle_initial(bracket)
+        # Re-establish any format-specific frontier (e.g. a gauntlet's opponent-choice round) that
+        # settle_initial does not set up, mirroring generate_* and report_result.
+        _apply_format_hooks(bracket)
+        return bracket
+
+    if target.elimination.state is not BracketState.DRAFT:
         raise BracketStateError("Bracket must be in DRAFT state to publish.")
 
-    elimination = copy.deepcopy(pools_bracket.elimination)
+    elimination = copy.deepcopy(target.elimination)
     elimination.state = BracketState.PUBLISHED
     # Re-run settlement now that the bracket is no longer DRAFT, so statuses/byes and the
     # PUBLISHED/COMPLETE transition resolve correctly.
     settle_initial(elimination)
     return PoolsBracket(
-        pools=list(pools_bracket.pools),
+        pools=list(target.pools),
         elimination=elimination,
-        participants=list(pools_bracket.participants),
-        config=dict(pools_bracket.config),
+        participants=list(target.participants),
+        config=dict(target.config),
     )
 
 

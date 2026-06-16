@@ -223,6 +223,12 @@ def _require_match(bracket: Bracket, match_id: int) -> Match:
     return m
 
 
+def _require_not_draft(bracket: Bracket) -> None:
+    """A DRAFT bracket is still being configured; publish it before any play can happen."""
+    if bracket.state is BracketState.DRAFT:
+        raise BracketStateError("Start the tournament before reporting results.")
+
+
 def _grand_final_matches(bracket: Bracket) -> tuple[Match | None, Match | None]:
     gf = reset = None
     for m in bracket.matches:
@@ -254,6 +260,7 @@ def report_result(
     metadata: dict[str, Any] | None = None,
 ) -> Bracket:
     """Report a match result, returning a new bracket with the result advanced."""
+    _require_not_draft(bracket)
     if advancement_type not in REAL_RESULTS:
         raise InvalidResultError(
             "advancement_type must be RESULT, FORFEIT, or WALKOVER for report_result()."
@@ -326,6 +333,7 @@ def report_choice(
     chosen_opponent_id: Any,
 ) -> Bracket:
     """Resolve a gauntlet opponent choice, making the match READY."""
+    _require_not_draft(bracket)
     b = copy.deepcopy(bracket)
     m = _require_match(b, match_id)
     if m.status is not MatchStatus.PENDING_CHOICE:
@@ -384,6 +392,7 @@ def unwind_result(
     match_id: int,
 ) -> tuple[Bracket, list[UnwindSignal]]:
     """Clear a result and cascade downstream, returning the new bracket and unwind signals."""
+    _require_not_draft(bracket)
     b = copy.deepcopy(bracket)
     matches = _index(b)
     m = _require_match(b, match_id)

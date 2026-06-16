@@ -21,6 +21,7 @@ This module owns three things built on that identity:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import cast
 
 from ..errors import ValidationError
 from ..utils.math import is_power_of_2, log2_int
@@ -31,6 +32,7 @@ __all__ = [
     "complete_bye_rounds",
     "allowable_bye_options",
     "build_bye_plan",
+    "expand_byes_to_slots",
     "ByeNode",
     "SeedLeaf",
     "MatchNode",
@@ -341,3 +343,30 @@ def build_bye_plan(byes: dict[int, int]) -> ByeNode:
             "byes do not tile a power-of-two bracket; call complete_bye_rounds() first."
         )
     return _region(seeds, byes, log2_int(total))
+
+
+def expand_byes_to_slots(byes: dict[int, int]) -> list[int | None]:
+    """Expand a tiling seed -> byes map into a full ``2**rounds`` slot list (``None`` = bye slot).
+
+    Each seed with ``b`` byes takes the first slot of a ``2**b`` block; the remaining slots in
+    that block are left empty so the occupant-count engine auto-advances the seed through ``b``
+    rounds. Walking the bye plan left-first keeps seeds in standard order (seeds 1 and 2 in
+    opposite halves) and the empty slots tile the bracket exactly. This lets the ordinary
+    power-of-two builders (e.g. :func:`pybracket.formats.double_elim.build_double_elim`) realise a
+    byed bracket without any bespoke layout: feed the slots in and let the engine resolve the byes.
+    Raises (via :func:`build_bye_plan`) if ``byes`` does not tile a perfect bracket.
+    """
+    slots: list[int | None] = []
+
+    def walk(node: ByeNode) -> None:
+        if node[0] == "seed":
+            seed = cast("SeedLeaf", node)[1]
+            slots.append(seed)
+            slots.extend([None] * ((1 << byes[seed]) - 1))
+            return
+        _, _height, left, right = cast("MatchNode", node)
+        walk(left)
+        walk(right)
+
+    walk(build_bye_plan(byes))
+    return slots

@@ -128,6 +128,8 @@ def advance_swiss_round(bracket: Bracket) -> Bracket:
     """Generate the next Swiss round's pairings. Raises if the current round is incomplete."""
     if bracket.format != "swiss":
         raise BracketStateError("advance_swiss_round() requires a Swiss bracket.")
+    if bracket.state is BracketState.DRAFT:
+        raise BracketStateError("Start the tournament before reporting results.")
 
     total_rounds = int(bracket.config["rounds"])
     current_round = max((m.round_number for m in bracket.matches), default=0)
