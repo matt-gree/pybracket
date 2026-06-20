@@ -16,7 +16,9 @@ from .base import IdGen, make_match
 __all__ = ["generate_gauntlet", "refresh_gauntlet_choices", "refresh_gauntlet_round_choices"]
 
 
-def _build_single_gauntlet(participants: list[Participant]) -> Bracket:
+def _build_single_gauntlet(
+    participants: list[Participant], state: BracketState = BracketState.PUBLISHED
+) -> Bracket:
     """Linear ladder: the two lowest seeds play, the winner climbs to face each higher seed."""
     ordered = sorted(participants, key=lambda p: p.seed)  # ordered[0] = seed 1
     n = len(ordered)
@@ -45,7 +47,7 @@ def _build_single_gauntlet(participants: list[Participant]) -> Bracket:
 
     bracket = Bracket(
         format="gauntlet",
-        state=BracketState.PUBLISHED,
+        state=state,
         participants=list(participants),
         matches=matches,
         rounds=rounds,
@@ -59,6 +61,7 @@ def _build_dual_gauntlet(
     participants: list[Participant],
     opponent_choice: bool,
     choice_scope: str,
+    state: BracketState = BracketState.PUBLISHED,
 ) -> Bracket:
     """Seeds 1 and 2 are seated at the two semifinals; everyone below climbs two ladders.
 
@@ -73,8 +76,8 @@ def _build_dual_gauntlet(
     """
     ordered = sorted(participants, key=lambda p: p.seed)
     if len(ordered) <= 3:
-        return _build_dual_small(ordered, participants, opponent_choice, choice_scope)
-    return _build_dual_staircase(ordered, participants, opponent_choice, choice_scope)
+        return _build_dual_small(ordered, participants, opponent_choice, choice_scope, state)
+    return _build_dual_staircase(ordered, participants, opponent_choice, choice_scope, state)
 
 
 def _build_dual_small(
@@ -82,13 +85,14 @@ def _build_dual_small(
     participants: list[Participant],
     opponent_choice: bool,
     choice_scope: str,
+    state: BracketState = BracketState.PUBLISHED,
 ) -> Bracket:
     """The 2- and 3-player shapes: a single final, or one byed semifinalist."""
     id_gen = IdGen()
     if len(ordered) == 2:
         final = make_match(id_gen(), 1, BracketSide.WINNERS, ordered[0].id, ordered[1].id)
         rounds = [Round(1, BracketSide.WINNERS, [final.id], "Final")]
-        return _finalize_dual(participants, [final], rounds, opponent_choice, choice_scope)
+        return _finalize_dual(participants, [final], rounds, opponent_choice, choice_scope, state)
 
     # Three players: seed 1 faces seed 3 at one semifinal; seed 2 byes into the final.
     sf1 = make_match(id_gen(), 1, BracketSide.WINNERS, ordered[0].id, ordered[2].id)
@@ -100,7 +104,9 @@ def _build_dual_small(
         Round(1, BracketSide.WINNERS, [sf1.id, sf2.id], "Semifinals"),
         Round(2, BracketSide.WINNERS, [final.id], "Final"),
     ]
-    return _finalize_dual(participants, [sf1, sf2, final], rounds, opponent_choice, choice_scope)
+    return _finalize_dual(
+        participants, [sf1, sf2, final], rounds, opponent_choice, choice_scope, state
+    )
 
 
 def _level_has_choice(level: int, opponent_choice: bool, choice_scope: str) -> bool:
@@ -117,6 +123,7 @@ def _build_dual_staircase(
     participants: list[Participant],
     opponent_choice: bool,
     choice_scope: str,
+    state: BracketState = BracketState.PUBLISHED,
 ) -> Bracket:
     """Build the two-ladder staircase for a field of four or more.
 
@@ -183,7 +190,7 @@ def _build_dual_staircase(
         )
         for rn in range(1, total_rounds + 1)
     ]
-    return _finalize_dual(participants, matches, rounds, opponent_choice, choice_scope)
+    return _finalize_dual(participants, matches, rounds, opponent_choice, choice_scope, state)
 
 
 def _finalize_dual(
@@ -192,10 +199,11 @@ def _finalize_dual(
     rounds: list[Round],
     opponent_choice: bool,
     choice_scope: str,
+    state: BracketState = BracketState.PUBLISHED,
 ) -> Bracket:
     bracket = Bracket(
         format="gauntlet",
-        state=BracketState.PUBLISHED,
+        state=state,
         participants=list(participants),
         matches=matches,
         rounds=rounds,
@@ -235,8 +243,13 @@ def generate_gauntlet(
     style: Literal["single", "dual"],
     opponent_choice: bool = False,
     choice_scope: Literal["round", "semifinals"] = "round",
+    state: BracketState = BracketState.PUBLISHED,
 ) -> Bracket:
-    """Generate a single-sided (linear chain) or dual-sided (two-ladder) gauntlet."""
+    """Generate a single-sided (linear chain) or dual-sided (two-ladder) gauntlet.
+
+    Pass ``state=BracketState.DRAFT`` to build the ladder without locking it for play, so a
+    tournament phase can review/reseed before ``publish_phase``.
+    """
     validate_participants(participants)
     if style == "single":
         if opponent_choice:
@@ -246,9 +259,9 @@ def generate_gauntlet(
                 "opponent_choice is only supported for dual-sided gauntlets; a single-sided "
                 "gauntlet is a fixed ladder with no opponent to choose."
             )
-        return _build_single_gauntlet(participants)
+        return _build_single_gauntlet(participants, state)
     if style == "dual":
-        return _build_dual_gauntlet(participants, opponent_choice, choice_scope)
+        return _build_dual_gauntlet(participants, opponent_choice, choice_scope, state)
     raise ValidationError(f"Unknown gauntlet style: {style!r}")
 
 

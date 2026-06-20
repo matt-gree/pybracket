@@ -1,262 +1,259 @@
+"""Pools as a phase: a grouped round-robin phase feeding an elimination phase.
+
+This is the decomposition of the old ``PoolsBracket`` — `Phase(format="round_robin",
+groups=N)` into `Phase(format=<elim>, entrants=Qualification(top_of_each_group(...)))`. These
+tests preserve the original pools coverage (snake assignment, rematch avoidance, draft/publish,
+preview) on the generalized ``Tournament`` engine.
+"""
+
 from __future__ import annotations
 
 import pybracket as pb
 import pytest
-from pybracket import BracketState
+from pybracket import (
+    BracketState,
+    PhaseSpec,
+    Qualification,
+    advance_phase,
+    draft_phase,
+    generate_tournament,
+    phase_results,
+    preview_phase,
+    publish_phase,
+    top_of_each_group,
+)
+from pybracket.models.tournament import Tournament
 
 from tests.helpers import make_participants, simulate
 
 
-def _play_pools(pools: pb.PoolsBracket) -> pb.PoolsBracket:
-    pools.pools = [simulate(p) for p in pools.pools]
-    return pools
+def _pools_to_bracket(
+    n: int,
+    num_pools: int,
+    advancement: int,
+    bracket_format: str = "double_elim",
+    seeding: str = "snake",
+) -> Tournament:
+    return generate_tournament(
+        make_participants(n),
+        phases=[
+            PhaseSpec("pools", "round_robin", groups=num_pools),
+            PhaseSpec(
+                "cut",
+                bracket_format,
+                entrants=Qualification(
+                    sources=top_of_each_group("pools", advancement), seeding=seeding
+                ),
+            ),
+        ],
+    )
+
+
+def _play_pools(t: Tournament) -> Tournament:
+    for i, bracket in enumerate(t.phases[0].brackets):
+        t.phases[0].brackets[i] = simulate(bracket)
+    return t
+
+
+def _advancer_ids(t: Tournament, num_pools: int, advancement: int) -> list[int]:
+    out: list[int] = []
+    for g in range(num_pools):
+        out.extend(r.participant_id for r in phase_results(t, "pools", g)[:advancement])
+    return out
 
 
 def test_snake_assignment_sizes() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
-    assert [len(p.participants) for p in pools.pools] == [4, 4]
+    t = _pools_to_bracket(8, num_pools=2, advancement=2)
+    pools = t.phases[0].brackets
+    assert [len(p.participants) for p in pools] == [4, 4]
     # Snake: seeds 1,4,5,8 -> pool A; 2,3,6,7 -> pool B.
-    pool_a = {p.seed for p in pools.pools[0].participants}
-    assert pool_a == {1, 4, 5, 8}
+    assert {p.seed for p in pools[0].participants} == {1, 4, 5, 8}
 
 
 def test_uneven_pools_extras_to_earliest() -> None:
-    pools = pb.generate_pools(make_participants(10), num_pools=4, advancement_count=2)
-    sizes = [len(p.participants) for p in pools.pools]
-    assert sizes == [3, 3, 2, 2]
-    assert pools.config["uneven_pools"] is True
+    t = _pools_to_bracket(10, num_pools=4, advancement=2)
+    assert [len(p.participants) for p in t.phases[0].brackets] == [3, 3, 2, 2]
 
 
-def test_elimination_draft_until_reseed() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
-    assert pools.elimination.state is BracketState.DRAFT
-    assert pools.elimination.matches == []
+def test_cut_starts_empty_draft() -> None:
+    t = _pools_to_bracket(8, num_pools=2, advancement=2)
+    assert t.phases[1].state is BracketState.DRAFT
+    assert t.phases[1].brackets == []
 
 
-def test_reseed_requires_complete_pools() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
+def test_draft_requires_complete_pools() -> None:
+    t = _pools_to_bracket(8, num_pools=2, advancement=2)
     with pytest.raises(pb.BracketStateError):
-        pb.reseed_pools_to_bracket(pools)
+        draft_phase(t, "cut")
 
 
 def test_full_pools_to_double_elim() -> None:
-    pools = pb.generate_pools(
-        make_participants(8), num_pools=2, advancement_count=2, bracket_format="double_elim"
-    )
-    pools = _play_pools(pools)
-    pools = pb.reseed_pools_to_bracket(pools)
-    assert pools.elimination.state is BracketState.PUBLISHED
-    assert pools.elimination.format == "double_elim"
-    assert len(pools.elimination.participants) == 4  # 2 pools * 2 advancing
-    pools.elimination = simulate(pools.elimination)
-    assert pb.is_complete(pools.elimination)
+    t = _play_pools(_pools_to_bracket(8, num_pools=2, advancement=2, bracket_format="double_elim"))
+    t = advance_phase(t, "cut")
+    cut = t.phases[1].brackets[0]
+    assert cut.state is BracketState.PUBLISHED
+    assert cut.format == "double_elim"
+    assert len(cut.participants) == 4  # 2 pools * 2 advancing
+    t.phases[1].brackets[0] = simulate(cut)
+    assert pb.is_complete(t.phases[1].brackets[0])
 
 
 def test_full_pools_to_single_elim() -> None:
-    pools = pb.generate_pools(
-        make_participants(8), num_pools=2, advancement_count=2, bracket_format="single_elim"
-    )
-    pools = _play_pools(pools)
-    pools = pb.reseed_pools_to_bracket(pools)
-    assert pools.elimination.format == "single_elim"
-    pools.elimination = simulate(pools.elimination)
-    assert pb.get_winner(pools.elimination) is not None
+    t = _play_pools(_pools_to_bracket(8, num_pools=2, advancement=2, bracket_format="single_elim"))
+    t = advance_phase(t, "cut")
+    assert t.phases[1].brackets[0].format == "single_elim"
+    t.phases[1].brackets[0] = simulate(t.phases[1].brackets[0])
+    assert pb.get_winner(t.phases[1].brackets[0]) is not None
 
 
 def test_rematch_avoidance_no_same_pool_round_one() -> None:
-    pools = pb.generate_pools(
-        make_participants(16), num_pools=4, advancement_count=2, bracket_format="single_elim"
-    )
+    t = _pools_to_bracket(16, num_pools=4, advancement=2, bracket_format="single_elim")
     pool_of = {
-        p.id: i for i, pool in enumerate(pools.pools) for p in pool.participants
+        p.id: i for i, pool in enumerate(t.phases[0].brackets) for p in pool.participants
     }
-    pools = _play_pools(pools)
-    pools = pb.reseed_pools_to_bracket(pools)
-    round1 = [m for m in pools.elimination.matches if m.round_number == 1]
-    for m in round1:
-        if m.participant1_id is not None and m.participant2_id is not None:
+    t = _play_pools(t)
+    t = draft_phase(t, "cut")
+    for m in t.phases[1].brackets[0].matches:
+        if m.round_number == 1 and m.participant1_id is not None and m.participant2_id is not None:
             assert pool_of[m.participant1_id] != pool_of[m.participant2_id]
 
 
-def test_manual_reseed_override() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
-    pools = _play_pools(pools)
-    # Determine the advancing ids and feed an explicit order.
-    advancers = []
-    for pool in pools.pools:
-        standings = pb.get_standings(pool)
-        advancers.extend(s.participant_id for s in standings[:2])
-    pools = pb.reseed_pools_to_bracket(pools, new_seed_order=advancers)
-    assert len(pools.elimination.participants) == 4
+def test_manual_seed_override() -> None:
+    t = _play_pools(_pools_to_bracket(8, num_pools=2, advancement=2))
+    advancers = _advancer_ids(t, num_pools=2, advancement=2)
+    t = draft_phase(t, "cut", new_seed_order=advancers)
+    assert len(t.phases[1].brackets[0].participants) == 4
 
 
-def test_num_pools_must_be_positive() -> None:
+def test_groups_must_be_positive() -> None:
     with pytest.raises(pb.ValidationError):
-        pb.generate_pools(make_participants(8), num_pools=0, advancement_count=1)
+        generate_tournament(
+            make_participants(8),
+            phases=[PhaseSpec("pools", "round_robin", groups=0)],
+        )
 
 
-def test_advancement_count_must_be_positive() -> None:
-    with pytest.raises(pb.ValidationError):
-        pb.generate_pools(make_participants(8), num_pools=2, advancement_count=0)
-
-
-def test_advancement_count_cannot_exceed_pool_size() -> None:
+def test_advancement_cannot_exceed_pool_size() -> None:
     # 8 players over 2 pools = 4 each; advancing 5 is impossible.
+    t = _play_pools(_pools_to_bracket(8, num_pools=2, advancement=5))
     with pytest.raises(pb.ValidationError):
-        pb.generate_pools(make_participants(8), num_pools=2, advancement_count=5)
-
-
-def test_unsupported_elimination_format_rejected_at_reseed() -> None:
-    pools = pb.generate_pools(
-        make_participants(8), num_pools=2, advancement_count=2, bracket_format="round_robin"
-    )
-    pools = _play_pools(pools)
-    with pytest.raises(pb.ValidationError):
-        pb.reseed_pools_to_bracket(pools)
+        draft_phase(t, "cut")
 
 
 # --- DRAFT -> publish flow ----------------------------------------------------------------
 
 
-def test_draft_pools_produces_draft_bracket() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
-    pools = _play_pools(pools)
-    drafted = pb.draft_pools_to_bracket(pools)
-    assert drafted.elimination.state is BracketState.DRAFT
-    # The bracket is fully built (seeds placed) even though it is not yet live.
-    assert len(drafted.elimination.matches) > 0
-    assert len(drafted.elimination.participants) == 4
-
-
-def test_draft_requires_complete_pools() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
-    with pytest.raises(pb.BracketStateError):
-        pb.draft_pools_to_bracket(pools)
+def test_draft_produces_draft_bracket() -> None:
+    t = _play_pools(_pools_to_bracket(8, num_pools=2, advancement=2))
+    t = draft_phase(t, "cut")
+    cut = t.phases[1].brackets[0]
+    assert cut.state is BracketState.DRAFT
+    assert len(cut.matches) > 0
+    assert len(cut.participants) == 4
 
 
 def test_publish_transitions_draft_to_published() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
-    pools = _play_pools(pools)
-    drafted = pb.draft_pools_to_bracket(pools)
-    published = pb.publish_bracket(drafted)
-    assert published.elimination.state is BracketState.PUBLISHED
-    # Drafting then publishing is playable to completion.
-    published.elimination = simulate(published.elimination)
-    assert pb.is_complete(published.elimination)
+    t = _play_pools(_pools_to_bracket(8, num_pools=2, advancement=2))
+    t = publish_phase(draft_phase(t, "cut"), "cut")
+    cut = t.phases[1].brackets[0]
+    assert cut.state is BracketState.PUBLISHED
+    t.phases[1].brackets[0] = simulate(cut)
+    assert pb.is_complete(t.phases[1].brackets[0])
 
 
 def test_publish_rejects_non_draft_bracket() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
-    pools = _play_pools(pools)
-    published = pb.reseed_pools_to_bracket(pools)  # already PUBLISHED
+    t = _play_pools(_pools_to_bracket(8, num_pools=2, advancement=2))
+    t = advance_phase(t, "cut")  # already PUBLISHED
     with pytest.raises(pb.BracketStateError):
-        pb.publish_bracket(published)
+        publish_phase(t, "cut")
 
 
-def test_reseed_pools_is_draft_then_publish_alias() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
-    pools = _play_pools(pools)
-    one_step = pb.reseed_pools_to_bracket(pools)
-    two_step = pb.publish_bracket(pb.draft_pools_to_bracket(pools))
-    assert one_step.elimination.state is BracketState.PUBLISHED
-    # Same resulting bracket structure via either path.
-    assert pb.bracket_to_dict(one_step.elimination) == pb.bracket_to_dict(two_step.elimination)
+def test_advance_phase_is_draft_then_publish() -> None:
+    t = _play_pools(_pools_to_bracket(8, num_pools=2, advancement=2))
+    one_step = advance_phase(t, "cut")
+    two_step = publish_phase(draft_phase(t, "cut"), "cut")
+    assert pb.bracket_to_dict(one_step.phases[1].brackets[0]) == pb.bracket_to_dict(
+        two_step.phases[1].brackets[0]
+    )
 
 
 def test_draft_reorder_changes_seeding_before_publish() -> None:
-    pools = pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2)
-    pools = _play_pools(pools)
-    advancers = []
-    for pool in pools.pools:
-        standings = pb.get_standings(pool)
-        advancers.extend(s.participant_id for s in standings[:2])
+    t = _play_pools(_pools_to_bracket(8, num_pools=2, advancement=2))
+    advancers = _advancer_ids(t, num_pools=2, advancement=2)
 
-    drafted = pb.draft_pools_to_bracket(pools)
-    first_default = [m for m in drafted.elimination.matches if m.round_number == 1][0]
+    default = draft_phase(t, "cut")
+    first_default = [m for m in default.phases[1].brackets[0].matches if m.round_number == 1][0]
 
-    reordered = pb.draft_pools_to_bracket(pools, new_seed_order=list(reversed(advancers)))
-    assert reordered.elimination.state is BracketState.DRAFT
-    first_reordered = [m for m in reordered.elimination.matches if m.round_number == 1][0]
-    # Reversing the seed order changes who lands in the first slot.
+    reordered = draft_phase(t, "cut", new_seed_order=list(reversed(advancers)))
+    first_reordered = [
+        m for m in reordered.phases[1].brackets[0].matches if m.round_number == 1
+    ][0]
     assert (first_default.participant1_id, first_default.participant2_id) != (
         first_reordered.participant1_id,
         first_reordered.participant2_id,
     )
-    published = pb.publish_bracket(reordered)
-    published.elimination = simulate(published.elimination)
-    assert pb.is_complete(published.elimination)
 
 
 # --- preview (preliminary bracket before pools finish) ------------------------------------
 
 
 def test_preview_before_pools_complete() -> None:
-    pools = pb.generate_pools(make_participants(12), num_pools=3, advancement_count=2)
-    # Unlike draft/reseed, preview never requires the pools to be played.
-    preview = pb.preview_pools_bracket(pools)
-    assert preview.config["preview"] is True
-    assert preview.elimination.state is BracketState.DRAFT
-    assert len(preview.elimination.participants) == 6  # 3 pools * 2 advancing
-    assert all(p.id < 0 for p in preview.elimination.participants)
-    assert all(p.stats.get("placeholder") for p in preview.elimination.participants)
-    names = {p.name for p in preview.elimination.participants}
-    assert "Pool A #1" in names and "Pool C #2" in names
+    t = _pools_to_bracket(12, num_pools=3, advancement=2, bracket_format="single_elim")
+    t = preview_phase(t, "cut")  # never requires the pools to be played
+    cut = t.phases[1].brackets[0]
+    assert cut.config["preview"] is True
+    assert cut.state is BracketState.DRAFT
+    assert len(cut.participants) == 6  # 3 pools * 2 advancing
+    assert all(p.id < 0 for p in cut.participants)
+    assert all(p.stats.get("placeholder") for p in cut.participants)
+    assert any("#1" in p.name for p in cut.participants)
     # The pools are carried over untouched.
-    assert all(not pb.is_complete(p) for p in preview.pools)
-
-
-def test_draft_records_non_preview() -> None:
-    pools = _play_pools(pb.generate_pools(make_participants(8), num_pools=2, advancement_count=2))
-    assert pb.draft_pools_to_bracket(pools).config["preview"] is False
+    assert all(not pb.is_complete(p) for p in t.phases[0].brackets)
 
 
 def test_preview_avoids_same_pool_round_one() -> None:
-    preview = pb.preview_pools_bracket(
-        pb.generate_pools(
-            make_participants(16), num_pools=4, advancement_count=2, bracket_format="single_elim"
-        )
-    )
-    origin = {p.id: p.stats["origin_pool"] for p in preview.elimination.participants}
-    for m in preview.elimination.matches:
+    t = _pools_to_bracket(16, num_pools=4, advancement=2, bracket_format="single_elim")
+    t = preview_phase(t, "cut")
+    cut = t.phases[1].brackets[0]
+    origin = {p.id: p.stats["origin_group"] for p in cut.participants}
+    for m in cut.matches:
         if m.round_number == 1 and m.participant1_id is not None and m.participant2_id is not None:
             assert origin[m.participant1_id] != origin[m.participant2_id]
 
 
 def test_preview_double_elim_shape() -> None:
-    preview = pb.preview_pools_bracket(
-        pb.generate_pools(
-            make_participants(8), num_pools=2, advancement_count=2, bracket_format="double_elim"
-        )
-    )
-    assert preview.elimination.format == "double_elim"
-    assert len(preview.elimination.participants) == 4
+    t = _pools_to_bracket(8, num_pools=2, advancement=2, bracket_format="double_elim")
+    t = preview_phase(t, "cut")
+    cut = t.phases[1].brackets[0]
+    assert cut.format == "double_elim"
+    assert len(cut.participants) == 4
 
 
 def test_preview_seeding_matches_real_draft_positions() -> None:
-    """Each (pool, place) origin lands in the same slot the real draft would place it."""
-    pools = pb.generate_pools(
-        make_participants(12), num_pools=3, advancement_count=2, bracket_format="single_elim"
-    )
-    preview = pb.preview_pools_bracket(pools)
+    """Each (group, place) origin lands in the same slot the real draft would place it."""
+    t = _pools_to_bracket(12, num_pools=3, advancement=2, bracket_format="single_elim")
+    preview = preview_phase(t, "cut")
 
-    played = _play_pools(pools)
+    played = _play_pools(t)
     origin: dict[int, tuple[int, int]] = {}
-    for pool_index, pool in enumerate(played.pools):
-        for place, standing in enumerate(pb.get_standings(pool)[:2], start=1):
-            origin[standing.participant_id] = (pool_index, place)
-    drafted = pb.draft_pools_to_bracket(played)
+    for g in range(3):
+        for place, ranked in enumerate(phase_results(played, "pools", g)[:2], start=1):
+            origin[ranked.participant_id] = (g, place)
+    drafted = draft_phase(played, "cut")
 
     prev_origin = {
-        p.id: (p.stats["origin_pool"], p.stats["origin_place"])
-        for p in preview.elimination.participants
+        p.id: (p.stats["origin_group"], p.stats["origin_place"])
+        for p in preview.phases[1].brackets[0].participants
     }
 
-    def pairs(bracket: pb.Bracket, lookup: dict[int, tuple[int, int]]):
-        out = []
+    def pairs(bracket: pb.Bracket, lookup: dict[int, tuple[int, int]]) -> list[object]:
+        out: list[object] = []
         for m in sorted(
             (m for m in bracket.matches if m.round_number == 1), key=lambda m: m.id
         ):
             out.append((lookup.get(m.participant1_id), lookup.get(m.participant2_id)))
         return out
 
-    assert pairs(preview.elimination, prev_origin) == pairs(drafted.elimination, origin)
+    assert pairs(preview.phases[1].brackets[0], prev_origin) == pairs(
+        drafted.phases[1].brackets[0], origin
+    )

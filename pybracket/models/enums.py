@@ -50,5 +50,6 @@ class BracketFormat(Enum):
     DOUBLE_ELIM = "double_elim"
     ROUND_ROBIN = "round_robin"
     SWISS = "swiss"
-    POOLS = "pools"
     GAUNTLET = "gauntlet"
+    # "pools" is not a bracket format: it is a phase of N parallel round-robin brackets
+    # (Phase(format="round_robin", groups=N)). See pybracket/tournament.py.

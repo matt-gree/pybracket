@@ -512,6 +512,8 @@ def get_winner(bracket: Bracket) -> Participant | None:
     """The overall tournament winner, or None if not yet decided."""
     if not is_complete(bracket):
         return None
+    if bracket.config.get("truncated_to"):
+        return None  # a truncated qualifier bracket has co-survivors, no single champion
     if bracket.format in ("round_robin", "swiss"):
         from ..tiebreakers.standings import get_standings
 

@@ -347,22 +347,39 @@ def generate_swiss(
     tiebreakers: list[Tiebreaker] | None = None,
 ) -> Bracket
 
-def generate_pools(
-    participants: list[Participant],
-    num_pools: int,
-    advancement_count: int,              # Players advancing per pool
-    bracket_format: str = 'double_elim',
-    snake_shuffle: bool = True,          # Apply rematch-avoidance shuffle to snake seed
-    tiebreakers: list[Tiebreaker] | None = None,
-    **bracket_kwargs,                    # Passed to bracket generation (grand_final_reset, etc.)
-) -> PoolsBracket                        # PoolsBracket wraps pool Brackets + elimination Bracket
-
 def generate_gauntlet(
     participants: list[Participant],
     style: Literal['single', 'dual'],
     opponent_choice: bool = False,       # Higher seed can choose opponent each round
     choice_scope: Literal['round', 'semifinals'] = 'round',
 ) -> Bracket
+```
+
+> **Pools are not a format.** What used to be `generate_pools` is now a *grouped round-robin
+> phase* of a multi-stage `Tournament` (see below). `Phase(format="round_robin", groups=N)`
+> builds the pools; a later elimination phase pulls the survivors.
+
+### Multi-Stage Tournaments
+
+A `Tournament` chains phases of heterogeneous formats; `groups` is orthogonal to format
+(round-robin × N = pools, single-elim × N = wave brackets). See `MULTISTAGE_DESIGN.md`.
+
+```python
+def generate_tournament(
+    participants: list[Participant],
+    phases: list[PhaseSpec],             # phase 0 seeds from the field; later phases wire up
+) -> Tournament
+
+# Boundary lifecycle (generalizes the old pools-to-bracket flow):
+def draft_phase(t: Tournament, phase_id: str, new_seed_order: list[Any] | None = None) -> Tournament
+def preview_phase(t: Tournament, phase_id: str) -> Tournament   # placeholder qualifiers
+def publish_phase(t: Tournament, phase_id: str) -> Tournament
+def advance_phase(t: Tournament, phase_id: str, new_seed_order=None) -> Tournament  # draft+publish
+def revert_phase(t: Tournament, phase_id: str) -> Tournament    # tear a dependent back to DRAFT
+def phase_results(t: Tournament, phase_id: str, group: int | None = None) -> list[Ranked]
+
+# SlotRef constructors for a Qualification's sources (spec = "phase" or "phase#group"):
+all_of(spec) / top(spec, n) / top_of_each_group(phase, n) / places(spec, lo, hi) / place(spec, p)
 ```
 
 ### Result Reporting
@@ -420,16 +437,13 @@ def reseed(
     bracket: Bracket,
     new_seed_order: list[Any],           # participant_ids in new seed order
 ) -> Bracket
-# Valid in DRAFT state (before bracket starts) or at pool → bracket transition.
+# Valid in DRAFT state (before bracket starts) or at a phase transition.
 # Raises BracketStateError if bracket is PUBLISHED and matches have been played.
-
-def reseed_pools_to_bracket(
-    pools_bracket: PoolsBracket,
-    new_seed_order: list[Any] | None = None,  # None = use snake seeding result
-) -> PoolsBracket
-# Called after all pool matches complete, before elimination bracket starts.
-# TO can pass a manual order or accept the library's snake seed.
 ```
+
+The pool → bracket transition is now `draft_phase` / `publish_phase` / `advance_phase` on a
+`Tournament` (see Multi-Stage Tournaments). `new_seed_order` overrides the library's snake
+seed at the boundary, exactly as before.
 
 ### Best-of Configuration
 
@@ -517,18 +531,21 @@ def bracket_from_json(json_str: str) -> Bracket
 - **No rematches**: both Monrad and Dutch implementations must guarantee no repeated pairings.
   Write explicit tests for this invariant at 4, 8, 16, and 32 players.
 
-### Pools → Bracket
+### Pools → Bracket (a two-phase `Tournament`)
+
+Pools are a grouped round-robin phase (`Phase(format="round_robin", groups=N)`) feeding an
+elimination phase whose `Qualification` pulls `top_of_each_group("pools", k)`.
 
 - **Pool assignment**: snake seeding. With 4 pools: seed 1→A, 2→B, 3→C, 4→D, 5→D, 6→C,
   7→B, 8→A, etc.
-- **Rematch-avoidance shuffle**: after snake seeding, apply a shuffle within seed bands to
-  ensure players from the same pool are placed on opposite sides of the elimination bracket
-  wherever possible. TO can disable this or manually reseed at the transition.
-- **Pool size**: if participants don't divide evenly, the library distributes extras to the
-  earliest pools (pool A gets an extra before pool B). TO is notified of uneven sizes and
-  can override.
-- **Advancement**: after all pool matches complete, call `reseed_pools_to_bracket()`. Until
-  then, the elimination bracket is in DRAFT state.
+- **Rematch-avoidance shuffle**: at a real merge (>1 source), after snake seeding apply a
+  shuffle within seed bands so same-pool players land on opposite sides of the bracket
+  wherever possible. TO can choose `seeding="rank"`/`"manual"` or reseed at the transition.
+- **Pool size**: if participants don't divide evenly, extras go to the earliest pools (pool A
+  before pool B).
+- **Advancement**: who advances is the *downstream* phase's `Qualification` (the consumer
+  decides `k`), not a property of the pool phase. Until `draft_phase`, the bracket is empty;
+  `draft_phase` builds it DRAFT, `publish_phase` locks it in.
 - **Pool tiebreakers**: pools use the same tiebreaker system as round robin.
 
 ### Gauntlet

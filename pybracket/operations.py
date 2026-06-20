@@ -3,13 +3,32 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from .advancement.engine import REAL_RESULTS
+from .advancement.engine import REAL_RESULTS, _apply_format_hooks, settle_initial
 from .errors import BracketStateError, ReseedError, ValidationError
 from .models.bracket import Bracket
 from .models.enums import BracketState, PairingMethod
 from .models.participant import Participant
 
-__all__ = ["reseed", "set_best_of"]
+__all__ = ["publish_bracket", "reseed", "set_best_of"]
+
+
+def publish_bracket(bracket: Bracket) -> Bracket:
+    """Transition a standalone DRAFT bracket to PUBLISHED, locking it in for play.
+
+    Re-settles the bracket — resolving construction-time byes and initial statuses and
+    re-establishing any format-specific frontier (e.g. a gauntlet's opponent-choice round) —
+    so play can begin immediately. Use this for a standalone bracket generated in DRAFT; a
+    bracket inside a :class:`Tournament` is published via ``publish_phase`` instead.
+    """
+    if bracket.state is not BracketState.DRAFT:
+        raise BracketStateError("Bracket must be in DRAFT state to publish.")
+    b = copy.deepcopy(bracket)
+    b.state = BracketState.PUBLISHED
+    settle_initial(b)
+    # Re-establish any format-specific frontier (e.g. a gauntlet's opponent-choice round) that
+    # settle_initial does not set up, mirroring generate_* and report_result.
+    _apply_format_hooks(b)
+    return b
 
 
 def _has_played(bracket: Bracket) -> bool:

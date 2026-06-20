@@ -52,14 +52,20 @@ def build_standard_bracket(
     ordered_slots: list[Participant | None],
     id_gen: Callable[[], int],
     bracket_side: BracketSide = BracketSide.WINNERS,
+    max_rounds: int | None = None,
 ) -> tuple[list[Match], list[list[int]], int]:
     """Build a single-elimination tree from ordered slots (length = power of two).
 
     Returns (matches, round_match_ids, final_match_id). `round_match_ids[r]` lists the match
     ids of round r+1 in order, which doubles as the per-round loser provenance for the LB.
+
+    ``max_rounds`` caps the number of rounds emitted (for a *truncated* / qualifier bracket
+    that stops once a top-N is decided). The last emitted round's winners have no next match.
     """
     size = len(ordered_slots)
     num_rounds = size.bit_length() - 1  # log2(size)
+    if max_rounds is not None:
+        num_rounds = min(num_rounds, max_rounds)
     by_id: dict[int, Match] = {}
     matches: list[Match] = []
     round_match_ids: list[list[int]] = []

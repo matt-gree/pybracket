@@ -165,3 +165,19 @@ def test_dual_opponent_choice_full_run() -> None:
         for m in ready:
             bracket = pb.report_result(bracket, m.id, min(m.participant1_id, m.participant2_id))
     assert pb.get_winner(bracket) is not None
+
+
+def test_state_draft_builds_without_locking() -> None:
+    for kwargs in ({"style": "single"}, {"style": "dual"},
+                   {"style": "dual", "opponent_choice": True}):
+        draft = pb.generate_gauntlet(
+            make_participants(6), state=pb.BracketState.DRAFT, **kwargs
+        )
+        assert draft.state is pb.BracketState.DRAFT
+        assert len(draft.matches) > 0
+        published = pb.generate_gauntlet(make_participants(6), **kwargs)
+        assert published.state is pb.BracketState.PUBLISHED
+        # Opponent-choice frontiers are still set up in DRAFT.
+        if kwargs.get("opponent_choice"):
+            statuses = {m.status for m in draft.matches}
+            assert pb.MatchStatus.PENDING_CHOICE in statuses

@@ -90,8 +90,13 @@ def generate_swiss(
     pairing_method: PairingMethod = PairingMethod.DUTCH,
     tiebreakers: list[Tiebreaker] | None = None,
     allow_bye: bool = True,
+    state: BracketState = BracketState.PUBLISHED,
 ) -> Bracket:
-    """Generate a Swiss bracket and pair the first round (later rounds via advance_swiss_round)."""
+    """Generate a Swiss bracket and pair the first round (later rounds via advance_swiss_round).
+
+    Pass ``state=BracketState.DRAFT`` to build the bracket (round 1 paired) without locking it
+    for play, so a tournament phase can review/reseed before ``publish_phase``.
+    """
     validate_participants(participants)
     total_rounds = rounds if rounds is not None else recommend_swiss_rounds(len(participants))
     tb = tiebreakers if tiebreakers is not None else _default_swiss_tiebreakers()
@@ -114,7 +119,7 @@ def generate_swiss(
 
     bracket = Bracket(
         format="swiss",
-        state=BracketState.PUBLISHED,
+        state=state,
         participants=list(participants),
         matches=matches,
         rounds=round_list,

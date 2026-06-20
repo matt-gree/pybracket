@@ -12,6 +12,10 @@ from .serialization import (
     bracket_from_json,
     bracket_to_dict,
     bracket_to_json,
+    tournament_from_dict,
+    tournament_from_json,
+    tournament_to_dict,
+    tournament_to_json,
 )
 from .validation import (
     ensure_no_duplicate_ids,
@@ -29,6 +33,10 @@ __all__ = [
     "bracket_from_json",
     "bracket_to_dict",
     "bracket_to_json",
+    "tournament_from_dict",
+    "tournament_from_json",
+    "tournament_to_dict",
+    "tournament_to_json",
     "ensure_no_duplicate_ids",
     "ensure_unique_seeds",
     "validate_participants",

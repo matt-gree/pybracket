@@ -14,6 +14,16 @@ from .participant import Participant
 from .placement import Placement
 from .round import Round
 from .standing import Standing
+from .tournament import (
+    ALL_PLACES,
+    EACH_GROUP,
+    Phase,
+    PhaseSpec,
+    Qualification,
+    Ranked,
+    SlotRef,
+    Tournament,
+)
 
 __all__ = [
     "AdvancementType",
@@ -28,4 +38,13 @@ __all__ = [
     "Placement",
     "Round",
     "Standing",
+    # Multi-stage
+    "ALL_PLACES",
+    "EACH_GROUP",
+    "Phase",
+    "PhaseSpec",
+    "Qualification",
+    "Ranked",
+    "SlotRef",
+    "Tournament",
 ]
