@@ -11,7 +11,9 @@ from .advancement import (
     get_winner,
     is_complete,
     report_choice,
+    report_game,
     report_result,
+    unwind_game,
     unwind_result,
 )
 from .errors import (
@@ -40,6 +42,7 @@ from .models import (
     BracketFormat,
     BracketSide,
     BracketState,
+    Game,
     Match,
     MatchStatus,
     PairingMethod,
@@ -112,6 +115,7 @@ __all__ = [
     "BracketFormat",
     "BracketSide",
     "BracketState",
+    "Game",
     "Match",
     "MatchStatus",
     "PairingMethod",
@@ -159,8 +163,10 @@ __all__ = [
     "ByeProfile",
     # Result reporting
     "report_result",
+    "report_game",
     "report_choice",
     "unwind_result",
+    "unwind_game",
     "UnwindSignal",
     # Querying
     "get_ready_matches",

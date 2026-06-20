@@ -12,14 +12,17 @@ from ..errors import (
 )
 from ..models.bracket import Bracket
 from ..models.enums import AdvancementType, BracketSide, BracketState, MatchStatus
+from ..models.game import Game
 from ..models.match import Match
 from ..models.participant import Participant
 
 __all__ = [
     "UnwindSignal",
     "report_result",
+    "report_game",
     "report_choice",
     "unwind_result",
+    "unwind_game",
     "get_ready_matches",
     "is_complete",
     "get_winner",
@@ -252,46 +255,24 @@ def _loser_bracket_final(bracket: Bracket) -> Match | None:
     return None
 
 
-def report_result(
-    bracket: Bracket,
-    match_id: int,
+def _settle_match_outcome(
+    b: Bracket,
+    m: Match,
     winner_id: Any,
-    advancement_type: AdvancementType = AdvancementType.RESULT,
-    metadata: dict[str, Any] | None = None,
-) -> Bracket:
-    """Report a match result, returning a new bracket with the result advanced."""
-    _require_not_draft(bracket)
-    if advancement_type not in REAL_RESULTS:
-        raise InvalidResultError(
-            "advancement_type must be RESULT, FORFEIT, or WALKOVER for report_result()."
-        )
+    loser_id: Any | None,
+    advancement_type: AdvancementType,
+    matches: dict[int, Match],
+) -> None:
+    """Record a decided match's winner/loser and advance it (in place).
 
-    b = copy.deepcopy(bracket)
-    matches = _index(b)
-    m = _require_match(b, match_id)
-
-    if m.status is MatchStatus.COMPLETED:
-        raise BracketStateError(
-            f"Match {match_id} is already completed; unwind_result() it first."
-        )
-    if m.status is MatchStatus.PENDING_CHOICE:
-        raise BracketStateError(
-            f"Match {match_id} is awaiting an opponent choice; call report_choice() first."
-        )
-    if winner_id not in (m.participant1_id, m.participant2_id) or winner_id is None:
-        raise InvalidResultError(
-            f"winner_id {winner_id!r} is not a participant in match {match_id}."
-        )
-
-    loser_id = (
-        m.participant2_id if winner_id == m.participant1_id else m.participant1_id
-    )
+    Shared by the match-level shortcut (``report_result``) and the per-game series clinch
+    (``report_game``): given an already-validated outcome, mark the match COMPLETED, deliver
+    the winner/loser onward, settle the grand-final reset, and re-resolve byes/statuses.
+    """
     m.winner_id = winner_id
     m.loser_id = loser_id
     m.advancement_type = advancement_type
     m.status = MatchStatus.COMPLETED
-    if metadata is not None:
-        m.metadata = {**m.metadata, **metadata}
 
     touched: list[int] = []
     if m.next_winner_match_id is not None:
@@ -324,6 +305,139 @@ def report_result(
     _resolve_byes_forward(b, counts, matches, touched)
     _recompute_statuses(b, counts)
     _apply_format_hooks(b)
+
+
+def _normalize_stats(
+    stats: dict[str, Any] | None,
+    participant1_id: Any,
+    participant2_id: Any,
+) -> dict[str, dict[Any, float]]:
+    """Coerce caller stats into the per-id ``{name: {participant_id: value}}`` shape.
+
+    A 2-tuple/list value is sugar ordered ``(participant1, participant2)``; the general form is
+    an explicit per-id dict (for non-1v1 matches later). Values are stored as floats.
+    """
+    if not stats:
+        return {}
+    out: dict[str, dict[Any, float]] = {}
+    for name, contrib in stats.items():
+        if isinstance(contrib, dict):
+            out[name] = {pid: float(v) for pid, v in contrib.items()}
+        else:
+            first, second = contrib
+            out[name] = {participant1_id: float(first), participant2_id: float(second)}
+    return out
+
+
+def report_result(
+    bracket: Bracket,
+    match_id: int,
+    winner_id: Any,
+    advancement_type: AdvancementType = AdvancementType.RESULT,
+    metadata: dict[str, Any] | None = None,
+    stats: dict[str, Any] | None = None,
+) -> Bracket:
+    """Report a match result directly, returning a new bracket with the result advanced.
+
+    The match-level shortcut: records the decisive outcome with no per-game log. Optional
+    ``stats`` are stored on ``Match.stats`` (same per-id shape as ``report_game``). To track
+    each game of a best-of-N series, use ``report_game`` instead.
+    """
+    _require_not_draft(bracket)
+    if advancement_type not in REAL_RESULTS:
+        raise InvalidResultError(
+            "advancement_type must be RESULT, FORFEIT, or WALKOVER for report_result()."
+        )
+
+    b = copy.deepcopy(bracket)
+    matches = _index(b)
+    m = _require_match(b, match_id)
+
+    if m.status is MatchStatus.COMPLETED:
+        raise BracketStateError(
+            f"Match {match_id} is already completed; unwind_result() it first."
+        )
+    if m.status is MatchStatus.PENDING_CHOICE:
+        raise BracketStateError(
+            f"Match {match_id} is awaiting an opponent choice; call report_choice() first."
+        )
+    if m.games:
+        raise InvalidResultError(
+            f"Match {match_id} has a per-game series log; report it via report_game()."
+        )
+    if winner_id not in (m.participant1_id, m.participant2_id) or winner_id is None:
+        raise InvalidResultError(
+            f"winner_id {winner_id!r} is not a participant in match {match_id}."
+        )
+
+    loser_id = (
+        m.participant2_id if winner_id == m.participant1_id else m.participant1_id
+    )
+    if metadata is not None:
+        m.metadata = {**m.metadata, **metadata}
+    if stats is not None:
+        m.stats = _normalize_stats(stats, m.participant1_id, m.participant2_id)
+    _settle_match_outcome(b, m, winner_id, loser_id, advancement_type, matches)
+    return b
+
+
+def report_game(
+    bracket: Bracket,
+    match_id: int,
+    winner_id: Any,
+    *,
+    stats: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Bracket:
+    """Report one game of a best-of-N series, returning a new bracket.
+
+    Appends a game to the match's series log. When a side reaches the clinch count
+    (``best_of // 2 + 1``), the match is settled and advanced exactly as ``report_result``
+    would — the advancement is simply deferred until the series is decided. Until then the
+    match stays READY for the next game.
+    """
+    _require_not_draft(bracket)
+
+    b = copy.deepcopy(bracket)
+    matches = _index(b)
+    m = _require_match(b, match_id)
+
+    if m.status is MatchStatus.COMPLETED:
+        raise BracketStateError(
+            f"Match {match_id} series is already decided; unwind it first."
+        )
+    if m.status is MatchStatus.PENDING_CHOICE:
+        raise BracketStateError(
+            f"Match {match_id} is awaiting an opponent choice; call report_choice() first."
+        )
+    if m.status is not MatchStatus.READY:
+        raise BracketStateError(f"Match {match_id} is not ready to be played.")
+    if winner_id not in (m.participant1_id, m.participant2_id) or winner_id is None:
+        raise InvalidResultError(
+            f"winner_id {winner_id!r} is not a participant in match {match_id}."
+        )
+
+    loser_id = (
+        m.participant2_id if winner_id == m.participant1_id else m.participant1_id
+    )
+    m.games.append(
+        Game(
+            number=len(m.games) + 1,
+            winner_id=winner_id,
+            loser_id=loser_id,
+            stats=_normalize_stats(stats, m.participant1_id, m.participant2_id),
+            metadata=dict(metadata) if metadata else {},
+        )
+    )
+
+    w1, w2 = m.series_score
+    clinch = m.best_of // 2 + 1
+    if w1 >= clinch or w2 >= clinch:
+        series_winner = m.participant1_id if w1 >= clinch else m.participant2_id
+        series_loser = (
+            m.participant2_id if series_winner == m.participant1_id else m.participant1_id
+        )
+        _settle_match_outcome(b, m, series_winner, series_loser, AdvancementType.RESULT, matches)
     return b
 
 
@@ -387,23 +501,22 @@ def _resolve_dual_gauntlet_choice(b: Bracket, chooser: Match, chosen: Any) -> No
     other.status = MatchStatus.READY
 
 
-def unwind_result(
-    bracket: Bracket,
-    match_id: int,
-) -> tuple[Bracket, list[UnwindSignal]]:
-    """Clear a result and cascade downstream, returning the new bracket and unwind signals."""
-    _require_not_draft(bracket)
-    b = copy.deepcopy(bracket)
-    matches = _index(b)
-    m = _require_match(b, match_id)
-    if m.advancement_type not in REAL_RESULTS:
-        raise BracketStateError(
-            f"Match {match_id} has no reported result to unwind."
-        )
+def _unwind_match_cascade(
+    b: Bracket,
+    entry_id: int,
+    matches: dict[int, Match],
+) -> tuple[list[UnwindSignal], set[int]]:
+    """Reverse a completed match's advancement and cascade into downstream completed matches.
 
+    Clears the winner/loser/advancement (and re-opens grand-final resets) for the entry match
+    and every downstream match that had been resolved from it. Downstream matches also have
+    their series logs wiped (their results are invalidated). The entry match's own ``games`` are
+    left untouched for the caller: ``unwind_result`` clears them entirely, ``unwind_game`` pops
+    only the last. Returns the unwind signals and the set of visited match ids.
+    """
     signals: list[UnwindSignal] = []
-    gf, reset = _grand_final_matches(b)
-    queue: deque[int] = deque([match_id])
+    _, reset = _grand_final_matches(b)
+    queue: deque[int] = deque([entry_id])
     visited: set[int] = set()
 
     while queue:
@@ -441,6 +554,8 @@ def unwind_result(
                 target.winner_id = None
                 target.loser_id = None
                 target.advancement_type = None
+                target.games.clear()
+                target.stats = {}
 
         # Unwinding the grand final's first set re-opens a reset that had settled to
         # NOT_NEEDED (no participants were ever placed there, so nothing was "cleared").
@@ -461,6 +576,31 @@ def unwind_result(
         cur.advancement_type = None
         if cur.status in (MatchStatus.COMPLETED, MatchStatus.BYE):
             cur.status = MatchStatus.READY
+        # Downstream matches lose their series too; the entry match's games are the caller's.
+        if cur.id != entry_id:
+            cur.games.clear()
+            cur.stats = {}
+
+    return signals, visited
+
+
+def unwind_result(
+    bracket: Bracket,
+    match_id: int,
+) -> tuple[Bracket, list[UnwindSignal]]:
+    """Clear a result (and its whole series log) and cascade downstream."""
+    _require_not_draft(bracket)
+    b = copy.deepcopy(bracket)
+    matches = _index(b)
+    m = _require_match(b, match_id)
+    if m.advancement_type not in REAL_RESULTS:
+        raise BracketStateError(
+            f"Match {match_id} has no reported result to unwind."
+        )
+
+    signals, visited = _unwind_match_cascade(b, match_id, matches)
+    m.games.clear()
+    m.stats = {}
 
     counts = compute_occupant_counts(b)
     # Re-resolve byes that may have been cleared, then recompute statuses.
@@ -470,6 +610,38 @@ def unwind_result(
     # inputs changed as a result of the unwind.
     _apply_format_hooks(b)
     return b, signals
+
+
+def unwind_game(
+    bracket: Bracket,
+    match_id: int,
+) -> tuple[Bracket, list[UnwindSignal]]:
+    """Remove the last game of a series, returning the new bracket and any unwind signals.
+
+    A mid-series correction simply drops the last game and the match stays READY for replay
+    (no signals). If the removed game was the one that clinched (and advanced) the match, the
+    advancement is reversed downstream — as ``unwind_result`` would — and the match re-opens
+    with its earlier games intact.
+    """
+    _require_not_draft(bracket)
+    b = copy.deepcopy(bracket)
+    matches = _index(b)
+    m = _require_match(b, match_id)
+    if not m.games:
+        raise BracketStateError(f"Match {match_id} has no game to unwind.")
+
+    if m.status is MatchStatus.COMPLETED:
+        signals, visited = _unwind_match_cascade(b, match_id, matches)
+        m.games.pop()
+        counts = compute_occupant_counts(b)
+        _resolve_byes_forward(b, counts, matches, list(visited))
+        _recompute_statuses(b, counts)
+        _apply_format_hooks(b)
+        return b, signals
+
+    # Mid-series correction: drop the last game; the match remains READY for the next.
+    m.games.pop()
+    return b, []
 
 
 # --------------------------------------------------------------------------------------

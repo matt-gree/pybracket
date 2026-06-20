@@ -8,7 +8,9 @@ from .engine import (
     get_winner,
     is_complete,
     report_choice,
+    report_game,
     report_result,
+    unwind_game,
     unwind_result,
 )
 from .placement import get_placements
@@ -22,6 +24,8 @@ __all__ = [
     "get_winner",
     "is_complete",
     "report_choice",
+    "report_game",
     "report_result",
+    "unwind_game",
     "unwind_result",
 ]

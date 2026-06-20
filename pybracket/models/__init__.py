@@ -9,6 +9,7 @@ from .enums import (
     MatchStatus,
     PairingMethod,
 )
+from .game import Game
 from .match import Match
 from .participant import Participant
 from .placement import Placement
@@ -31,6 +32,7 @@ __all__ = [
     "BracketFormat",
     "BracketSide",
     "BracketState",
+    "Game",
     "Match",
     "MatchStatus",
     "PairingMethod",

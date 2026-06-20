@@ -12,6 +12,7 @@ from ..models.enums import (
     MatchStatus,
     PairingMethod,
 )
+from ..models.game import Game
 from ..models.match import Match
 from ..models.participant import Participant
 from ..models.round import Round
@@ -37,6 +38,36 @@ def _participant_from_dict(d: dict[str, Any]) -> Participant:
     return Participant(id=d["id"], seed=d["seed"], name=d["name"], stats=dict(d.get("stats", {})))
 
 
+def _stats_to_dict(stats: dict[str, dict[Any, float]]) -> dict[str, dict[Any, float]]:
+    return {name: dict(vals) for name, vals in stats.items()}
+
+
+def _stats_from_dict(stats: dict[str, Any]) -> dict[str, dict[Any, float]]:
+    # Per-id stat contributions, keyed by stat name then participant id. JSON stringifies the
+    # inner id keys (as it does elsewhere in the model); values are coerced back to float.
+    return {name: {pid: float(v) for pid, v in vals.items()} for name, vals in stats.items()}
+
+
+def _game_to_dict(g: Game) -> dict[str, Any]:
+    return {
+        "number": g.number,
+        "winner_id": g.winner_id,
+        "loser_id": g.loser_id,
+        "stats": _stats_to_dict(g.stats),
+        "metadata": dict(g.metadata),
+    }
+
+
+def _game_from_dict(d: dict[str, Any]) -> Game:
+    return Game(
+        number=d["number"],
+        winner_id=d.get("winner_id"),
+        loser_id=d.get("loser_id"),
+        stats=_stats_from_dict(d.get("stats", {})),
+        metadata=dict(d.get("metadata", {})),
+    )
+
+
 def _match_to_dict(m: Match) -> dict[str, Any]:
     return {
         "id": m.id,
@@ -52,6 +83,8 @@ def _match_to_dict(m: Match) -> dict[str, Any]:
         "status": m.status.value,
         "best_of": m.best_of,
         "metadata": dict(m.metadata),
+        "games": [_game_to_dict(g) for g in m.games],
+        "stats": _stats_to_dict(m.stats),
     }
 
 
@@ -71,6 +104,8 @@ def _match_from_dict(d: dict[str, Any]) -> Match:
         status=MatchStatus(d["status"]),
         best_of=d.get("best_of", 1),
         metadata=dict(d.get("metadata", {})),
+        games=[_game_from_dict(g) for g in d.get("games", [])],
+        stats=_stats_from_dict(d.get("stats", {})),
     )
 
 
