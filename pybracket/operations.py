@@ -88,6 +88,15 @@ def reseed(bracket: Bracket, new_seed_order: list[Any]) -> Bracket:
         return generate_round_robin(
             reseeded, tiebreakers=deserialize_tiebreakers(cfg.get("tiebreakers"), reseeded)
         )
+    if fmt == "league":
+        from .formats.league import generate_league
+
+        return generate_league(
+            reseeded,
+            best_of=int(cfg.get("best_of", 1)),
+            points=cfg.get("points_system"),
+            tiebreakers=deserialize_tiebreakers(cfg.get("tiebreakers"), reseeded),
+        )
     if fmt == "swiss":
         from .formats.swiss import generate_swiss
 

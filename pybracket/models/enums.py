@@ -52,5 +52,6 @@ class BracketFormat(Enum):
     ROUND_ROBIN = "round_robin"
     SWISS = "swiss"
     GAUNTLET = "gauntlet"
+    LEAGUE = "league"  # round-robin season with schedule, points, divisions, cross-division play
     # "pools" is not a bracket format: it is a phase of N parallel round-robin brackets
     # (Phase(format="round_robin", groups=N)). See pybracket/tournament.py.

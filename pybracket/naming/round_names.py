@@ -67,6 +67,12 @@ def round_robin_round_name(round_number: int, total_rounds: int) -> str:
     return f"Round {round_number}"
 
 
+def matchweek_round_name(matchweek: int, total_matchweeks: int) -> str:
+    if matchweek == total_matchweeks:
+        return f"Matchweek {matchweek} (Final)"
+    return f"Matchweek {matchweek}"
+
+
 def gauntlet_round_name(round_number: int, total_rounds: int, style: str) -> str:
     if round_number == total_rounds:
         return "Final"

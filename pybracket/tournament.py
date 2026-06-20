@@ -72,7 +72,7 @@ __all__ = [
     "place",
 ]
 
-_STANDINGS_FORMATS = ("round_robin", "swiss")
+_STANDINGS_FORMATS = ("round_robin", "swiss", "league")
 
 
 # --------------------------------------------------------------------------------------
@@ -308,6 +308,16 @@ def _build_one(
 ) -> Bracket:
     if fmt == "round_robin":
         return generate_round_robin(parts, state=state, pool_index=pool_index)
+    if fmt == "league":
+        from .formats.league import generate_league
+        from .models.points import PointsSystem
+
+        ps = config.get("points_system")
+        if isinstance(ps, dict):
+            ps = PointsSystem.from_spec(ps)
+        return generate_league(
+            parts, best_of=int(config.get("best_of", 1)), points=ps, state=state
+        )
     if fmt == "swiss":
         return generate_swiss(parts, rounds=config.get("rounds"), state=state)
     if fmt == "gauntlet":

@@ -40,7 +40,7 @@ REAL_RESULTS = frozenset(
 )
 
 # Formats ranked by standings (where a draw is meaningful — nobody advances on one).
-_STANDINGS_FORMATS = frozenset({"round_robin", "swiss"})
+_STANDINGS_FORMATS = frozenset({"round_robin", "swiss", "league"})
 
 
 @dataclass
@@ -771,7 +771,7 @@ def get_winner(bracket: Bracket) -> Participant | None:
         return None
     if bracket.config.get("truncated_to"):
         return None  # a truncated qualifier bracket has co-survivors, no single champion
-    if bracket.format in ("round_robin", "swiss"):
+    if bracket.format in ("round_robin", "swiss", "league"):
         from ..tiebreakers.standings import get_standings
 
         standings = get_standings(bracket)

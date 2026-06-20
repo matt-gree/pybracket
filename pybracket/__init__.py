@@ -31,6 +31,7 @@ from .formats import (
     advance_swiss_round,
     generate_double_elim,
     generate_gauntlet,
+    generate_league,
     generate_round_robin,
     generate_single_elim,
     generate_swiss,
@@ -133,6 +134,7 @@ __all__ = [
     "generate_double_elim",
     "generate_round_robin",
     "generate_swiss",
+    "generate_league",
     "generate_gauntlet",
     # Multi-stage tournaments
     "Tournament",

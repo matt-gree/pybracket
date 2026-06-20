@@ -31,7 +31,7 @@ def _round_name_of(bracket: Bracket, match_id: int) -> str:
 
 def get_placements(bracket: Bracket) -> list[Placement]:
     """Final placements computed from bracket structure (only meaningful once complete)."""
-    if bracket.format in ("round_robin", "swiss"):
+    if bracket.format in ("round_robin", "swiss", "league"):
         return _standings_placements(bracket)
     if bracket.config.get("truncated_to"):
         return _truncated_placements(bracket)
