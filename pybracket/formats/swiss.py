@@ -17,7 +17,7 @@ from ..pairing.monrad import monrad_pairings
 from ..tiebreakers.base import StandingsContext, Tiebreaker
 from ..tiebreakers.buchholz import BuchholzTiebreaker
 from ..tiebreakers.head_to_head import HeadToHeadTiebreaker
-from ..tiebreakers.standings import serialize_tiebreakers
+from ..tiebreakers.standings import _points_system, serialize_tiebreakers
 from ..tiebreakers.win_count import WinCountTiebreaker
 from ..utils.math import recommend_swiss_rounds
 from ..utils.validation import validate_participants
@@ -154,8 +154,14 @@ def advance_swiss_round(bracket: Bracket) -> Bracket:
 
     b = copy.deepcopy(bracket)
     ids = [p.id for p in b.participants]
-    ctx = StandingsContext(b.matches, ids)
-    scores = {pid: float(ctx.wins[pid]) for pid in ids}
+    points = _points_system(b)
+    ctx = StandingsContext(b.matches, ids, points_system=points)
+    # Pair by points when a PointsSystem is configured (so draws count), else by raw win count.
+    scores = (
+        {pid: ctx.points[pid] for pid in ids}
+        if points is not None
+        else {pid: float(ctx.wins[pid]) for pid in ids}
+    )
 
     method = PairingMethod(b.config["pairing_method"]) if isinstance(
         b.config["pairing_method"], str

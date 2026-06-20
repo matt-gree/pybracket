@@ -13,6 +13,7 @@ from .game import Game
 from .match import Match
 from .participant import Participant
 from .placement import Placement
+from .points import PointsSystem
 from .round import Round
 from .standing import Standing
 from .tournament import (
@@ -38,6 +39,7 @@ __all__ = [
     "PairingMethod",
     "Participant",
     "Placement",
+    "PointsSystem",
     "Round",
     "Standing",
     # Multi-stage

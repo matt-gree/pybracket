@@ -14,8 +14,11 @@ class Standing:
     rank: int
     wins: int
     losses: int
+    draws: int = 0
+    points: float = 0.0
+    # draws/points populated for standings formats; points is 0 unless a PointsSystem is set.
     advancement_type_counts: dict[AdvancementType, int] = field(default_factory=dict)
-    # Tracks how many results were by forfeit, walkover, bye, or normal result.
+    # Tracks how many results were by forfeit, walkover, bye, draw, or normal result.
     # Callers can decide whether to include forfeits in win/loss display.
     tiebreaker_scores: dict[str, float] = field(default_factory=dict)
     # Keyed by tiebreaker class name.

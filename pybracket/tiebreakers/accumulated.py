@@ -16,8 +16,9 @@ class AccumulatedTiebreaker:
     """A scalar tiebreaker over an accumulated input, with a chosen aggregation.
 
     The library names no stat: ``input`` is either a built-in derived input the engine computes
-    from results (``"wins"`` -> wins/losses, ``"games"`` -> games_won/games_lost) or any caller
-    stat name (e.g. ``"runs"``). ``agg`` selects the aggregation:
+    from results (``"wins"`` -> wins/losses, ``"games"`` -> games_won/games_lost, ``"draws"``,
+    ``"points"`` when a PointsSystem is set) or any caller stat name (e.g. ``"runs"``). ``agg``
+    selects the aggregation:
 
     - ``for``     — the participant's own total
     - ``against`` — opponents' total in shared games/matches
@@ -50,6 +51,10 @@ class AccumulatedTiebreaker:
                 float(ctx.games_won.get(participant_id, 0)),
                 float(ctx.games_lost.get(participant_id, 0)),
             )
+        if self.input == "draws":
+            return float(ctx.draws.get(participant_id, 0)), 0.0
+        if self.input == "points":
+            return ctx.points.get(participant_id, 0.0), 0.0
         return (
             ctx.stat_for.get(participant_id, {}).get(self.input, 0.0),
             ctx.stat_against.get(participant_id, {}).get(self.input, 0.0),

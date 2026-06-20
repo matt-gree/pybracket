@@ -4,6 +4,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..models.enums import AdvancementType, MatchStatus
 from ..models.match import Match
+from ..models.points import PointsSystem
 
 __all__ = ["StandingsContext", "Tiebreaker", "RelationalTiebreaker"]
 
@@ -23,10 +24,17 @@ class StandingsContext:
     per-game averages. Everything is re-derived from the matches, so edits self-correct.
     """
 
-    def __init__(self, matches: list[Match], participant_ids: list[Any]) -> None:
+    def __init__(
+        self,
+        matches: list[Match],
+        participant_ids: list[Any],
+        points_system: PointsSystem | None = None,
+    ) -> None:
         self.participant_ids = list(participant_ids)
+        self.points_system = points_system
         self.wins: dict[Any, int] = dict.fromkeys(participant_ids, 0)
         self.losses: dict[Any, int] = dict.fromkeys(participant_ids, 0)
+        self.draws: dict[Any, int] = dict.fromkeys(participant_ids, 0)
         self.opponents: dict[Any, list[Any]] = {pid: [] for pid in participant_ids}
         self.head_to_head: dict[Any, dict[Any, int]] = {pid: {} for pid in participant_ids}
         self.adv_counts: dict[Any, dict[AdvancementType, int]] = {
@@ -38,6 +46,10 @@ class StandingsContext:
         self.stat_for: dict[Any, dict[str, float]] = {pid: {} for pid in participant_ids}
         self.stat_against: dict[Any, dict[str, float]] = {pid: {} for pid in participant_ids}
         self._ingest(matches)
+        self.points: dict[Any, float] = {
+            pid: points_system.points_for(self.wins[pid], self.draws[pid], self.losses[pid])
+            for pid in participant_ids
+        } if points_system is not None else dict.fromkeys(participant_ids, 0.0)
 
     def _bump_adv(self, pid: Any, adv: AdvancementType) -> None:
         counts = self.adv_counts[pid]
@@ -52,6 +64,9 @@ class StandingsContext:
             if m.status is not MatchStatus.COMPLETED:
                 continue
             adv = m.advancement_type
+            if adv is AdvancementType.DRAW:
+                self._ingest_draw(m, known)
+                continue
             if adv not in _REAL or adv is None:
                 continue
             winner, loser = m.winner_id, m.loser_id
@@ -71,6 +86,17 @@ class StandingsContext:
                         self.head_to_head[loser].get(winner, 0) - 1
                     )
             self._accumulate(m, known)
+
+    def _ingest_draw(self, m: Match, known: set[Any]) -> None:
+        """A drawn match: both participants drew and faced each other; no winner/loser."""
+        p1, p2 = m.participant1_id, m.participant2_id
+        for pid, opp in ((p1, p2), (p2, p1)):
+            if pid in known:
+                self.draws[pid] += 1
+                self._bump_adv(pid, AdvancementType.DRAW)
+                if opp is not None:
+                    self.opponents[pid].append(opp)
+        self._accumulate(m, known)
 
     def _accumulate(self, m: Match, known: set[Any]) -> None:
         """Sum game records and stat contributions for a completed match (in place)."""

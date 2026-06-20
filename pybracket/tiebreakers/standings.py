@@ -4,6 +4,7 @@ from typing import Any
 
 from ..models.bracket import Bracket
 from ..models.match import Match
+from ..models.points import PointsSystem
 from ..models.standing import Standing
 from .accumulated import AccumulatedTiebreaker
 from .base import RelationalTiebreaker, StandingsContext, Tiebreaker
@@ -66,11 +67,26 @@ def deserialize_tiebreakers(
     return chain or default_tiebreakers()
 
 
+def _points_system(bracket: Bracket) -> PointsSystem | None:
+    ps = bracket.config.get("points_system")
+    if isinstance(ps, PointsSystem):
+        return ps
+    if isinstance(ps, dict):
+        return PointsSystem.from_spec(ps)
+    return None
+
+
 def _build_chain(bracket: Bracket) -> list[Tiebreaker]:
     specs = bracket.config.get("tiebreakers")
     chain = deserialize_tiebreakers(specs, bracket.participants)
-    if not any(tb.name == "win_count" for tb in chain):
-        chain = [WinCountTiebreaker(), *chain]
+    # Primary sort: points when a PointsSystem is configured, else match wins (today's behaviour).
+    primary: Tiebreaker = (
+        AccumulatedTiebreaker("points", "for")
+        if _points_system(bracket) is not None
+        else WinCountTiebreaker()
+    )
+    if not any(tb.name == primary.name for tb in chain):
+        chain = [primary, *chain]
     return chain
 
 
@@ -83,7 +99,7 @@ def get_standings(bracket: Bracket) -> list[Standing]:
     they cannot be a global score. A cohort no tiebreaker can separate shares a rank.
     """
     pids = [p.id for p in bracket.participants]
-    ctx = StandingsContext(bracket.matches, pids)
+    ctx = StandingsContext(bracket.matches, pids, points_system=_points_system(bracket))
     chain = _build_chain(bracket)
     scalars = [tb for tb in chain if not isinstance(tb, RelationalTiebreaker)]
     relationals = [tb for tb in chain if isinstance(tb, RelationalTiebreaker)]
@@ -111,6 +127,8 @@ def get_standings(bracket: Bracket) -> list[Standing]:
                     rank=rank,
                     wins=ctx.wins[pid],
                     losses=ctx.losses[pid],
+                    draws=ctx.draws[pid],
+                    points=ctx.points[pid],
                     advancement_type_counts=dict(ctx.adv_counts[pid]),
                     tiebreaker_scores=dict(score_map[pid]),
                 )

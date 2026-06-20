@@ -15,6 +15,7 @@ from ..models.enums import (
 from ..models.game import Game
 from ..models.match import Match
 from ..models.participant import Participant
+from ..models.points import PointsSystem
 from ..models.round import Round
 from ..models.tournament import Phase, Qualification, SlotRef, Tournament
 
@@ -156,6 +157,8 @@ def _config_to_dict(config: dict[str, Any]) -> dict[str, Any]:
     for key, value in config.items():
         if isinstance(value, PairingMethod):
             out[key] = value.value
+        elif isinstance(value, PointsSystem):
+            out[key] = value.to_spec()
         else:
             out[key] = value
     return out
@@ -167,6 +170,10 @@ def _config_from_dict(config: dict[str, Any]) -> dict[str, Any]:
     pm = out.get("pairing_method")
     if isinstance(pm, str):
         out["pairing_method"] = PairingMethod(pm)
+    # 'points_system' is a PointsSystem dataclass stored as a flat dict.
+    ps = out.get("points_system")
+    if isinstance(ps, dict):
+        out["points_system"] = PointsSystem.from_spec(ps)
     # 'bye_rounds' (single_elim) is a seed->count map; JSON turns its int keys into strings,
     # so coerce them back so dict and JSON round-trips agree.
     bye_rounds = out.get("bye_rounds")

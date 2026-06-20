@@ -32,6 +32,7 @@ class AdvancementType(Enum):
     BYE = "bye"  # Planned bye (no opponent)
     FORFEIT = "forfeit"  # Opponent no-showed or withdrew mid-match
     WALKOVER = "walkover"  # Opponent disqualified
+    DRAW = "draw"  # No winner (standings formats only, where draws are enabled)
 
 
 class BracketState(Enum):

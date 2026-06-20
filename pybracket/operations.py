@@ -3,11 +3,19 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from .advancement.engine import REAL_RESULTS, _apply_format_hooks, settle_initial
+from .advancement.engine import (
+    REAL_RESULTS,
+    _apply_format_hooks,
+    _draws_allowed,
+    settle_initial,
+)
 from .errors import BracketStateError, ReseedError, ValidationError
 from .models.bracket import Bracket
-from .models.enums import BracketState, PairingMethod
+from .models.enums import AdvancementType, BracketState, PairingMethod
 from .models.participant import Participant
+
+# A reported result of any kind (incl. a draw) means play has begun.
+_PLAYED = REAL_RESULTS | {AdvancementType.DRAW}
 
 __all__ = ["publish_bracket", "reseed", "set_best_of"]
 
@@ -32,7 +40,7 @@ def publish_bracket(bracket: Bracket) -> Bracket:
 
 
 def _has_played(bracket: Bracket) -> bool:
-    return any(m.advancement_type in REAL_RESULTS for m in bracket.matches)
+    return any(m.advancement_type in _PLAYED for m in bracket.matches)
 
 
 def reseed(bracket: Bracket, new_seed_order: list[Any]) -> Bracket:
@@ -110,12 +118,21 @@ def set_best_of(
     best_of: int,
     round_overrides: dict[int, int] | None = None,
 ) -> Bracket:
-    """Set best-of globally and/or per round. Only before the affected rounds begin."""
-    if best_of < 1 or best_of % 2 == 0:
-        raise ValidationError("best_of must be a positive odd number.")
+    """Set best-of globally and/or per round. Only before the affected rounds begin.
+
+    ``best_of`` must be positive. An even best_of (a series that can end level) is allowed only
+    where draws are enabled, since a level even series settles as a match draw.
+    """
+    for value in [best_of, *(round_overrides or {}).values()]:
+        if value < 1:
+            raise ValidationError("best_of must be a positive integer.")
+        if value % 2 == 0 and not _draws_allowed(bracket):
+            raise ValidationError(
+                "An even best_of is only allowed when draws are enabled (a level series draws)."
+            )
 
     started: set[int] = {
-        m.round_number for m in bracket.matches if m.advancement_type in REAL_RESULTS
+        m.round_number for m in bracket.matches if m.advancement_type in _PLAYED
     }
 
     if bracket.state is not BracketState.DRAFT:

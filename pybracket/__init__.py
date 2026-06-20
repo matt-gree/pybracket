@@ -11,6 +11,7 @@ from .advancement import (
     get_winner,
     is_complete,
     report_choice,
+    report_draw,
     report_game,
     report_result,
     unwind_game,
@@ -50,6 +51,7 @@ from .models import (
     Phase,
     PhaseSpec,
     Placement,
+    PointsSystem,
     Qualification,
     Ranked,
     Round,
@@ -123,6 +125,7 @@ __all__ = [
     "PairingMethod",
     "Participant",
     "Placement",
+    "PointsSystem",
     "Round",
     "Standing",
     # Generation
@@ -166,6 +169,7 @@ __all__ = [
     # Result reporting
     "report_result",
     "report_game",
+    "report_draw",
     "report_choice",
     "unwind_result",
     "unwind_game",

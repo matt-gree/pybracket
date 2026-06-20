@@ -15,11 +15,13 @@ from ..models.enums import AdvancementType, BracketSide, BracketState, MatchStat
 from ..models.game import Game
 from ..models.match import Match
 from ..models.participant import Participant
+from ..models.points import PointsSystem
 
 __all__ = [
     "UnwindSignal",
     "report_result",
     "report_game",
+    "report_draw",
     "report_choice",
     "unwind_result",
     "unwind_game",
@@ -36,6 +38,9 @@ __all__ = [
 REAL_RESULTS = frozenset(
     {AdvancementType.RESULT, AdvancementType.FORFEIT, AdvancementType.WALKOVER}
 )
+
+# Formats ranked by standings (where a draw is meaningful — nobody advances on one).
+_STANDINGS_FORMATS = frozenset({"round_robin", "swiss"})
 
 
 @dataclass
@@ -307,6 +312,17 @@ def _settle_match_outcome(
     _apply_format_hooks(b)
 
 
+def _settle_match_draw(b: Bracket, m: Match) -> None:
+    """Mark a match a draw — nobody advances — and recompute statuses (in place)."""
+    m.winner_id = None
+    m.loser_id = None
+    m.advancement_type = AdvancementType.DRAW
+    m.status = MatchStatus.COMPLETED
+    counts = compute_occupant_counts(b)
+    _recompute_statuses(b, counts)
+    _apply_format_hooks(b)
+
+
 def _normalize_stats(
     stats: dict[str, Any] | None,
     participant1_id: Any,
@@ -438,6 +454,75 @@ def report_game(
             m.participant2_id if series_winner == m.participant1_id else m.participant1_id
         )
         _settle_match_outcome(b, m, series_winner, series_loser, AdvancementType.RESULT, matches)
+    elif len(m.games) >= m.best_of:
+        # An even best-of ended level. A standings match with draws enabled is a match draw;
+        # otherwise the series must produce a winner (use an odd best_of or add a decider).
+        if not _draws_allowed(b):
+            raise InvalidResultError(
+                f"Match {match_id} series is level after {m.best_of} games and draws are not "
+                "enabled; use an odd best_of or enable draws."
+            )
+        _settle_match_draw(b, m)
+    return b
+
+
+def _draws_allowed(bracket: Bracket) -> bool:
+    """Draws are valid only for standings formats, and only when enabled in config."""
+    if bracket.format not in _STANDINGS_FORMATS:
+        return False
+    ps = bracket.config.get("points_system")
+    if isinstance(ps, PointsSystem):
+        return ps.draws_allowed
+    if isinstance(ps, dict):
+        return bool(ps.get("draws_allowed", True))
+    return bool(bracket.config.get("draws_allowed", False))
+
+
+def report_draw(
+    bracket: Bracket,
+    match_id: int,
+    *,
+    stats: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Bracket:
+    """Report a match as a draw (no winner), returning a new bracket.
+
+    Valid only for standings formats with draws enabled (a ``PointsSystem(draws_allowed=True)``
+    or ``config["draws_allowed"]``). Nobody advances on a draw, so the match simply completes;
+    both participants gain a draw in the standings.
+    """
+    _require_not_draft(bracket)
+    if not _draws_allowed(bracket):
+        raise InvalidResultError(
+            "Draws are not enabled: set a PointsSystem(draws_allowed=True) or "
+            "config['draws_allowed']=True on a standings-format bracket."
+        )
+
+    b = copy.deepcopy(bracket)
+    m = _require_match(b, match_id)
+
+    if m.status is MatchStatus.COMPLETED:
+        raise BracketStateError(
+            f"Match {match_id} is already completed; unwind_result() it first."
+        )
+    if m.status is MatchStatus.PENDING_CHOICE:
+        raise BracketStateError(
+            f"Match {match_id} is awaiting an opponent choice; call report_choice() first."
+        )
+    if m.status is not MatchStatus.READY:
+        raise BracketStateError(f"Match {match_id} is not ready to be played.")
+    if m.games:
+        raise InvalidResultError(
+            f"Match {match_id} has a per-game series log; report it via report_game()."
+        )
+    if m.participant1_id is None or m.participant2_id is None:
+        raise InvalidResultError(f"Match {match_id} needs two participants to draw.")
+
+    if metadata is not None:
+        m.metadata = {**m.metadata, **metadata}
+    if stats is not None:
+        m.stats = _normalize_stats(stats, m.participant1_id, m.participant2_id)
+    _settle_match_draw(b, m)
     return b
 
 
@@ -567,7 +652,7 @@ def _unwind_match_cascade(
         ):
             reset.status = MatchStatus.PENDING
 
-        if cur.advancement_type in REAL_RESULTS:
+        if cur.advancement_type in REAL_RESULTS or cur.advancement_type is AdvancementType.DRAW:
             signals.append(UnwindSignal(match_id=cur.id, metadata=dict(cur.metadata)))
 
         # Clear this match's own result.
@@ -593,7 +678,7 @@ def unwind_result(
     b = copy.deepcopy(bracket)
     matches = _index(b)
     m = _require_match(b, match_id)
-    if m.advancement_type not in REAL_RESULTS:
+    if m.advancement_type not in REAL_RESULTS and m.advancement_type is not AdvancementType.DRAW:
         raise BracketStateError(
             f"Match {match_id} has no reported result to unwind."
         )
