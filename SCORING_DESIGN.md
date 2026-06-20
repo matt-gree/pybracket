@@ -1,6 +1,6 @@
 # Scoring, series & tiebreakers — design
 
-Status: **proposal** (no code yet). A **library-wide** layer (every format, not leagues) for:
+Status: **implemented** (2026-06-19). A **library-wide** layer (every format, not leagues) for:
 
 1. **Per-game best-of series** — track each game of a BO-N match, not just the series winner.
 2. **Caller-defined stat accumulation** — per-game/per-match numeric tallies the engine sums
@@ -188,3 +188,17 @@ engine rather than caller-maintained aggregates.
 - Draws/points: `report_draw` updates points; rejected for elimination/when disabled.
 - Serialization round-trip of a match with a game log and stats, and of a custom chain.
 - Back-compat: existing BO1 `report_result` flows unchanged; no `games` ⇒ behaves as today.
+
+## 12. Implementation status
+
+Implemented 2026-06-19 in four slices (each a commit): §1 per-game series
+(`Game`/`Match.games`/`report_game`/`unwind_game`/`series_score`); §2–4 accumulation on
+`StandingsContext` (`games_won/lost`, `stat_for/against`, `count`); §6 tiebreaker chain
+(`AccumulatedTiebreaker` with for/against/diff/count/avg over `wins`/`games`/`draws`/`points`/
+caller stats, relational `MiniLeagueTiebreaker`, head-to-head purified to a terminal cohort
+reorder); §5 draws + `PointsSystem` (`report_draw`, even-best-of level draws, points-primary
+ranking, Swiss pairs by points). Full suite green, mypy strict + ruff clean.
+
+Resolved open questions (§10): even-BO level series settles as a **match draw by games won**
+(not aggregate score) where draws are enabled, else errors; `avg` (per-game) is the only rate
+aggregation for now; v1 resolves only **match** advancement at clinch (no mid-series advancement).
