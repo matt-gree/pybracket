@@ -65,8 +65,10 @@ from .seeding import (
     complete_bye_rounds,
 )
 from .tiebreakers import (
+    AccumulatedTiebreaker,
     BuchholzTiebreaker,
     HeadToHeadTiebreaker,
+    MiniLeagueTiebreaker,
     StatTiebreaker,
     Tiebreaker,
     WinCountTiebreaker,
@@ -189,6 +191,8 @@ __all__ = [
     "HeadToHeadTiebreaker",
     "BuchholzTiebreaker",
     "StatTiebreaker",
+    "AccumulatedTiebreaker",
+    "MiniLeagueTiebreaker",
     # Utilities
     "next_power_of_2",
     "recommend_pool_count",

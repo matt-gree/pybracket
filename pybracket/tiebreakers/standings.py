@@ -3,10 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from ..models.bracket import Bracket
+from ..models.match import Match
 from ..models.standing import Standing
-from .base import StandingsContext, Tiebreaker
+from .accumulated import AccumulatedTiebreaker
+from .base import RelationalTiebreaker, StandingsContext, Tiebreaker
 from .buchholz import BuchholzTiebreaker
 from .head_to_head import HeadToHeadTiebreaker
+from .mini_league import MiniLeagueTiebreaker
 from .stat_tiebreaker import StatTiebreaker
 from .win_count import WinCountTiebreaker
 
@@ -41,6 +44,16 @@ def deserialize_tiebreakers(
             chain.append(HeadToHeadTiebreaker())
         elif kind == "buchholz":
             chain.append(BuchholzTiebreaker(truncated=bool(spec.get("truncated", False))))
+        elif kind == "accumulated":
+            chain.append(
+                AccumulatedTiebreaker(
+                    input=spec["input"],
+                    agg=spec.get("agg", "diff"),
+                    higher_is_better=bool(spec.get("higher_is_better", True)),
+                )
+            )
+        elif kind == "mini_league":
+            chain.append(MiniLeagueTiebreaker())
         elif kind == "stat":
             tb = StatTiebreaker(
                 stat_key=spec["stat_key"],
@@ -61,76 +74,87 @@ def _build_chain(bracket: Bracket) -> list[Tiebreaker]:
     return chain
 
 
-def _reorder_head_to_head(
-    order: list[Any],
-    score_key: dict[Any, tuple[float, ...]],
-    ctx: StandingsContext,
-) -> list[Any]:
-    result: list[Any] = []
-    i = 0
-    n = len(order)
-    while i < n:
-        j = i + 1
-        while j < n and score_key[order[j]] == score_key[order[i]]:
-            j += 1
-        cohort = order[i:j]
-        if len(cohort) > 1:
-            cohort_set = set(cohort)
-            cohort.sort(
-                key=lambda pid: -sum(
-                    v for opp, v in ctx.head_to_head.get(pid, {}).items() if opp in cohort_set
-                )
-            )
-        result.extend(cohort)
-        i = j
-    return result
-
-
 def get_standings(bracket: Bracket) -> list[Standing]:
-    """Rank participants by wins, then by the configured tiebreaker chain."""
+    """Rank participants by the scalar tiebreaker chain, then relational cohort reorders.
+
+    Scalar tiebreakers (win count, accumulated stats, …) build a sort key and rank the whole
+    field. Relational tiebreakers (head-to-head, mini-league) then reorder, in chain order, only
+    the cohorts the scalars left tied — their answer depends on which participants are tied, so
+    they cannot be a global score. A cohort no tiebreaker can separate shares a rank.
+    """
     pids = [p.id for p in bracket.participants]
     ctx = StandingsContext(bracket.matches, pids)
     chain = _build_chain(bracket)
+    scalars = [tb for tb in chain if not isinstance(tb, RelationalTiebreaker)]
+    relationals = [tb for tb in chain if isinstance(tb, RelationalTiebreaker)]
 
     score_map: dict[Any, dict[str, float]] = {
-        pid: {tb.name: tb.score(pid, ctx) for tb in chain} for pid in pids
+        pid: {tb.name: tb.score(pid, ctx) for tb in scalars} for pid in pids
     }
     score_key: dict[Any, tuple[float, ...]] = {
-        pid: tuple(score_map[pid][tb.name] for tb in chain) for pid in pids
+        pid: tuple(score_map[pid][tb.name] for tb in scalars) for pid in pids
     }
     seed_of = {p.id: p.seed for p in bracket.participants}
 
     order = sorted(pids, key=lambda pid: (tuple(-s for s in score_key[pid]), seed_of[pid]))
-    if any(tb.name == "head_to_head" for tb in chain):
-        order = _reorder_head_to_head(order, score_key, ctx)
+    groups = _scalar_groups(order, score_key)
+    for tb in relationals:
+        groups = _refine_cohorts(groups, tb, ctx, bracket.matches, seed_of)
 
     standings: list[Standing] = []
-    rank = 0
-    for idx, pid in enumerate(order):
-        if idx == 0 or not _same_position(order[idx - 1], pid, score_key, ctx, chain):
-            rank = idx + 1
-        standings.append(
-            Standing(
-                participant_id=pid,
-                rank=rank,
-                wins=ctx.wins[pid],
-                losses=ctx.losses[pid],
-                advancement_type_counts=dict(ctx.adv_counts[pid]),
-                tiebreaker_scores=dict(score_map[pid]),
+    rank = 1
+    for group in groups:
+        for pid in group:
+            standings.append(
+                Standing(
+                    participant_id=pid,
+                    rank=rank,
+                    wins=ctx.wins[pid],
+                    losses=ctx.losses[pid],
+                    advancement_type_counts=dict(ctx.adv_counts[pid]),
+                    tiebreaker_scores=dict(score_map[pid]),
+                )
             )
-        )
+        rank += len(group)
     return standings
 
 
-def _same_position(
-    a: Any,
-    b: Any,
-    score_key: dict[Any, tuple[float, ...]],
+def _scalar_groups(
+    order: list[Any], score_key: dict[Any, tuple[float, ...]]
+) -> list[list[Any]]:
+    """Partition the scalar-sorted order into cohorts sharing an identical score key."""
+    groups: list[list[Any]] = []
+    i, n = 0, len(order)
+    while i < n:
+        j = i + 1
+        while j < n and score_key[order[j]] == score_key[order[i]]:
+            j += 1
+        groups.append(order[i:j])
+        i = j
+    return groups
+
+
+def _refine_cohorts(
+    groups: list[list[Any]],
+    tb: RelationalTiebreaker,
     ctx: StandingsContext,
-    chain: list[Tiebreaker],
-) -> bool:
-    if score_key[a] != score_key[b]:
-        return False
-    # Tied on every score but separable head-to-head -> distinct positions.
-    has_h2h = any(tb.name == "head_to_head" for tb in chain)
-    return not (has_h2h and ctx.head_to_head.get(a, {}).get(b, 0) != 0)
+    matches: list[Match],
+    seed_of: dict[Any, int],
+) -> list[list[Any]]:
+    """Reorder each still-tied cohort by a relational tiebreaker, splitting where it separates."""
+    refined: list[list[Any]] = []
+    for group in groups:
+        if len(group) == 1:
+            refined.append(group)
+            continue
+        cohort = set(group)
+        value = {pid: tb.cohort_value(pid, cohort, ctx, matches) for pid in group}
+        ordered = sorted(group, key=lambda pid: (-value[pid], seed_of[pid]))
+        i, n = 0, len(ordered)
+        while i < n:
+            j = i + 1
+            while j < n and value[ordered[j]] == value[ordered[i]]:
+                j += 1
+            refined.append(ordered[i:j])
+            i = j
+    return refined

@@ -5,7 +5,7 @@ from typing import Any, Protocol, runtime_checkable
 from ..models.enums import AdvancementType, MatchStatus
 from ..models.match import Match
 
-__all__ = ["StandingsContext", "Tiebreaker"]
+__all__ = ["StandingsContext", "Tiebreaker", "RelationalTiebreaker"]
 
 _REAL = frozenset(
     {AdvancementType.RESULT, AdvancementType.FORFEIT, AdvancementType.WALKOVER}
@@ -110,8 +110,27 @@ class StandingsContext:
 class Tiebreaker(Protocol):
     """A tiebreaker produces a comparable score per participant (higher is better)."""
 
-    name: str
+    @property
+    def name(self) -> str: ...
 
     def score(self, participant_id: Any, ctx: StandingsContext) -> float: ...
 
     def to_spec(self) -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class RelationalTiebreaker(Tiebreaker, Protocol):
+    """A tiebreaker that ranks a *tied cohort* by their mutual results (head-to-head, mini-league).
+
+    Relational tiebreakers contribute no scalar sort-key term — their answer depends on which
+    participants are tied. They run as terminal cohort reorders: ``cohort_value`` ranks each
+    member within the given tied ``cohort``, higher is better.
+    """
+
+    def cohort_value(
+        self,
+        participant_id: Any,
+        cohort: set[Any],
+        ctx: StandingsContext,
+        matches: list[Match],
+    ) -> float: ...
