@@ -117,6 +117,42 @@ def test_serialization_roundtrip() -> None:
     assert rb.matches[0].metadata["matchweek"] == 1
 
 
+def test_double_round_robin_plays_each_pairing_twice() -> None:
+    lg = pb.generate_league(make_participants(4), double=True)
+    assert len(lg.rounds) == 6  # 2 * (n-1)
+    assert len(lg.matches) == 12
+    pairs = Counter(frozenset((m.participant1_id, m.participant2_id)) for m in lg.matches)
+    assert all(count == 2 for count in pairs.values())
+
+
+def test_double_round_robin_balances_and_swaps_venues() -> None:
+    lg = pb.generate_league(make_participants(4), double=True)
+    homes = Counter(m.metadata["home_id"] for m in lg.matches)
+    assert set(homes.values()) == {3}  # each team hosts exactly half of its 6 games
+    venues: dict[frozenset, set] = {}
+    for m in lg.matches:
+        venues.setdefault(frozenset((m.participant1_id, m.participant2_id)), set()).add(
+            m.metadata["home_id"]
+        )
+    assert all(len(hosts) == 2 for hosts in venues.values())  # each meeting at a different venue
+
+
+def test_double_with_divisions() -> None:
+    lg = pb.generate_league(make_participants(8), divisions=2, double=True)
+    assert lg.config["double"] is True
+    assert len(lg.matches) == 24  # 2 divisions * 12 (double RR of 4)
+
+
+def test_reseed_preserves_divisions_and_double() -> None:
+    lg = pb.generate_league(
+        make_participants(8), divisions=2, double=True, points=pb.PointsSystem()
+    )
+    rs = pb.reseed(lg, list(range(8, 0, -1)))
+    assert len(pb.league_divisions(rs)) == 2
+    assert rs.config["double"] is True
+    assert len(rs.matches) == 24
+
+
 def test_divisions_split_into_one_bracket() -> None:
     lg = pb.generate_league(make_participants(8), divisions=2)
     rosters = pb.league_divisions(lg)

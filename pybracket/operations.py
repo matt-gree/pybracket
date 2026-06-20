@@ -91,8 +91,11 @@ def reseed(bracket: Bracket, new_seed_order: list[Any]) -> Bracket:
     if fmt == "league":
         from .formats.league import generate_league
 
+        rosters = cfg.get("divisions")
         return generate_league(
             reseeded,
+            divisions=len(rosters) if rosters else 1,
+            double=bool(cfg.get("double", False)),
             best_of=int(cfg.get("best_of", 1)),
             points=cfg.get("points_system"),
             tiebreakers=deserialize_tiebreakers(cfg.get("tiebreakers"), reseeded),

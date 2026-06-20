@@ -424,6 +424,7 @@ def _build_league(parts: list[Participant], phase: Phase, state: BracketState) -
     return generate_league(
         parts,
         divisions=max(1, phase.groups),
+        double=bool(phase.config.get("double", False)),
         best_of=int(phase.config.get("best_of", 1)),
         points=ps,
         state=state,
