@@ -94,24 +94,29 @@ exists, so draw counts ride along naturally.
 BO-N interaction: an odd `best_of` cannot draw; an even `best_of` (e.g. a two-game series) can
 end level — permitted only when the points system allows draws.
 
-### 4b. Optional per-match score (for match-derived tiebreakers)
+### 4b. Per-match stat contributions (the accumulator channel)
 
-Sport tiebreakers like **run differential** or **goal difference** accumulate from match
-scores. Rather than make the caller maintain a running aggregate on `Participant.stats` (which
-the edit/unwind gate can't auto-correct), the engine gets a *first-class, optional* per-match
-score it can aggregate and re-derive:
+Game tiebreakers like **run differential** or **goal difference** accumulate from per-match
+values. Rather than make the caller keep a running total on `Participant.stats` (which the
+edit/unwind gate can't auto-correct), the engine gets a *blessed, library-read* per-match stat
+channel it aggregates and re-derives. **This is a library-wide tiebreaker mechanism, not
+league-specific** — it applies to every standings-based phase (round-robin, Swiss, league).
 
-- `Match.score: tuple[float, float] | None = None` — participant1's tally vs participant2's
-  tally for the match. **Not metadata** — a blessed channel the ranking engine may read.
-- `report_result(bracket, match_id, winner_id, *, score=(7, 3), …)` — optional `score`.
-- `StandingsContext` aggregates `points_for[pid]` / `points_against[pid]` from `score` across a
-  participant's matches.
+- `Match.stats: dict[str, dict[Any, float]] = {}` — named per-match quantities keyed by
+  participant id, e.g. `{"runs": {p1: 7, p2: 3}}`. **Distinct from `metadata`** (which the
+  ranking engine still never reads); `Match.stats` is the channel the engine *does* read.
+- Contributed when reporting: `report_result(bracket, match_id, winner_id, *,
+  stats={"runs": (7, 3)}, …)` — a 2-tuple is sugar ordered `(participant1, participant2)`; the
+  general form is the per-id dict. `report_draw` accepts it too.
+- `StandingsContext` accumulates, per participant, `stat_for[pid][name]` (their own values) and
+  `stat_against[pid][name]` (opponents' values in shared matches), across all their matches.
 
-The library stays game-agnostic: it never knows "runs" or "goals", only "each match has two
-numeric tallies". The caller maps their domain onto the pair (baseball `(runs, runs)`; a BO3
-league `(maps_won, maps_lost)`). Because differentials are re-derived from the matches, an
-`edit_phase_result` / `unwind` corrects them automatically — the whole point of doing it here
-rather than on `Participant.stats`.
+The library stays game-agnostic: it never knows "runs" or "goals", only "each match carries
+named numeric tallies per participant". The caller maps their domain onto the names (baseball
+`{"runs": …}`; a BO3 league `{"maps": …}`). Because the totals are re-derived from the matches,
+an `edit_phase_result` / `unwind` corrects them automatically — the whole point of putting them
+here rather than on `Participant.stats`. The mechanism generalizes win-count itself ("accumulate
++1 per win"): **everything rankable is an accumulator over per-match contributions.**
 
 ## 5. Points and standings
 
@@ -128,20 +133,32 @@ class PointsSystem:
 - **No `PointsSystem`** → `get_standings` ranks by record (wins, then tiebreakers) — unchanged.
 - **With `PointsSystem`** → standings rank by `points` first, then the configured tiebreakers.
   Points-aware ranking is a new branch in `tiebreakers/standings.py`.
-League tiebreakers are **two-track**, which answers "how do sport tiebreakers like run
-differential fit a game-agnostic library?":
 
-- **Match-derived aggregates** — `DifferentialTiebreaker` (`Σpoints_for − Σpoints_against`) and
-  `PointsForTiebreaker` (`Σpoints_for`) read the §4b per-match `score` from `StandingsContext`.
-  The library does the arithmetic and re-derives on every edit/unwind; the caller only chooses
-  what the two tallies *mean*. This is the recommended home for run/goal differential, points
-  scored, map differential, etc.
-- **Opaque / external stats** — `StatTiebreaker(stat_key=…)` keeps reading `Participant.stats`
+### Tiebreakers — one handler, one accumulator model
+
+There is already **one tiebreak handler**: every tiebreaker implements the `Tiebreaker`
+protocol and runs through the single chain in `get_standings`, for every standings-based phase.
+We don't add a handler — we add one generic accumulator tiebreaker, and a tournament-level
+default chain so it applies everywhere. The chain has three kinds of member, all uniform:
+
+- **Accumulator tiebreakers (the general, game-agnostic mechanism)** —
+  `AccumulatedTiebreaker(name, mode="diff" | "for" | "against", higher_is_better=True)` reads
+  the §4b `stat_for` / `stat_against` totals from `StandingsContext`. One parameterized class
+  covers run/goal differential (`"runs", "diff"`), points-scored (`"points", "for"`), map
+  differential, etc. The caller picks the *name* (meaning); the library does the arithmetic and
+  re-derives on every edit/unwind. Win-count and points are the same idea on outcome-derived
+  accumulators (`+1`/`PointsSystem` per result).
+- **Relational / cohort tiebreakers** — head-to-head and the new **mini-league** (rank tied
+  teams by a sub-table of *only their mutual matches*) need the tied cohort to compute, so they
+  run as cohort-aware reorder passes after scalar ranking (extending today's
+  `_reorder_head_to_head`). Buchholz-style strength of schedule also lives here.
+- **External / opaque stats** — `StatTiebreaker(stat_key=…)` keeps reading `Participant.stats`
   for values the library can't derive from matches (a pre-season rating, a manual override, a
-  coin flip). The caller owns these because they aren't match-derived.
-- Plus the existing outcome-derived tiebreakers (head-to-head, Buchholz-style strength of
-  schedule). A "mini-league among tied teams" tiebreaker (results restricted to the tied set)
-  is a candidate addition (§13).
+  coin flip).
+
+**App-wide default:** `generate_tournament(..., tiebreakers=[...])` sets a default chain every
+phase inherits unless its `PhaseSpec` overrides it — so the TO configures tiebreaking once for
+the whole tournament. A standalone (single-phase) league sets it on the phase directly.
 
 ## 6. Scheduling (matchweeks via metadata)
 
@@ -242,13 +259,19 @@ draft/publish lifecycle apply unchanged.
   (extend `_config_to_dict`/`_from_dict`, like `PairingMethod` today).
 - Schedule lives in `Round`s + match `metadata`, both already serialized.
 - `AdvancementType.DRAW` round-trips through the existing enum handling.
-- `Match.score` serializes as a 2-element list or `null`.
+- `Match.stats` serializes as a nested dict (name → {id → value}); JSON coerces non-string ids
+  the same way the rest of the model already handles `Any` ids.
+- `AccumulatedTiebreaker` / `MiniLeagueTiebreaker` get `to_spec`/`from_spec` like the existing
+  tiebreakers; the tournament-level default chain serializes in `Tournament.config`.
 
 ## 12. Required engine changes
 
 - **`AdvancementType.DRAW` + `report_draw` + `unwind` of a draw** (advancement engine).
-- **Optional `Match.score`** (§4b) + `report_result(..., score=)`; `StandingsContext` aggregates
-  `points_for`/`points_against`; new `DifferentialTiebreaker` / `PointsForTiebreaker`.
+- **`Match.stats` accumulator channel** (§4b) + `report_result(..., stats=)` / `report_draw`;
+  `StandingsContext` aggregates `stat_for` / `stat_against`; one generic `AccumulatedTiebreaker`.
+- **`MiniLeagueTiebreaker`** as a cohort-aware reorder pass (alongside head-to-head).
+- **Tournament-level default tiebreaker chain** (`generate_tournament(tiebreakers=…)`) inherited
+  by phases unless overridden.
 - **`Standing.draws` / `Standing.points`; points-aware ranking** in `tiebreakers/standings.py`,
   gated on a configured `PointsSystem`.
 - **`league` format + `generate_league` + schedule generator** (single/double RR, byes,
@@ -260,14 +283,19 @@ draft/publish lifecycle apply unchanged.
 
 ## 13. Open questions
 
-Resolved: **`league` is its own format** (not RR sugar). **Home/away balancing** is in (v1
-best-effort: alternate venues, mirror the two halves; no hard constraint solver). **Run-style
-tiebreakers** use the §4b per-match `score` + a generic `DifferentialTiebreaker`.
+Resolved:
+- **`league` is its own format** (not RR sugar).
+- **Home/away balancing** is in (v1 best-effort: alternate venues, mirror the two halves; no
+  hard constraint solver).
+- **Tiebreakers**: one handler (the existing chain); a generic `Match.stats` accumulator
+  (`AccumulatedTiebreaker`) for all match-derived quantities, applied library-wide across phases
+  with a tournament-level default chain; **mini-league tiebreaker is in** (cohort reorder pass);
+  `Participant.stats`/`StatTiebreaker` retained for non-match-derived values.
 
 Still open:
 
-1. **Mini-league tiebreaker** (rank tied teams by results among themselves only) — add to the
-   tiebreaker chain, or leave to the differential/stat tracks?
+1. **Per-game vs per-match contributions** — `Match.stats` is per *match*; per-game-within-a-
+   series accumulation would need sub-game modeling (out of scope unless wanted).
 2. **Home/away hard constraints** (no 3 consecutive home games, derby spacing) — a later
    constraint solver, or is best-effort balancing enough indefinitely?
 3. **OT/shootout points** (hockey-style regulation vs OT win) — extend `PointsSystem`, or out
@@ -283,9 +311,12 @@ Still open:
   opponents; `balanced` is rank-symmetric; `random` is reproducible under a fixed seed.
 - Draws: `report_draw` updates points/standings; rejected for elimination and when disabled;
   unwind of a draw restores standings.
-- Score / differential: `report_result(score=…)` feeds `points_for`/`points_against`;
-  `DifferentialTiebreaker` orders correctly and is **re-derived after an `edit_phase_result` /
-  unwind** (the reason it lives in the engine, not `Participant.stats`).
+- Accumulators: `report_result(stats=…)` feeds `stat_for`/`stat_against`;
+  `AccumulatedTiebreaker(mode="diff")` orders correctly and is **re-derived after an
+  `edit_phase_result` / unwind** (the reason it lives in the engine, not `Participant.stats`);
+  works identically in a round-robin, Swiss, and league phase.
+- Mini-league: tied teams reorder by their mutual-results sub-table; verified against a
+  constructed tie where overall record matches but head-to-head sub-table differs.
 - Points standings: ordering by points then tiebreakers; win/loss mode unchanged when no
   `PointsSystem`.
 - Transforms: `with_home_away` / `with_best_of` / `with_points` / `with_cross_division` rebuild
