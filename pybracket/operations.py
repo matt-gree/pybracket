@@ -98,6 +98,7 @@ def reseed(bracket: Bracket, new_seed_order: list[Any]) -> Bracket:
             double=bool(cfg.get("double", False)),
             best_of=int(cfg.get("best_of", 1)),
             points=cfg.get("points_system"),
+            cross_division=cfg.get("cross_division"),
             tiebreakers=deserialize_tiebreakers(cfg.get("tiebreakers"), reseeded),
         )
     if fmt == "swiss":

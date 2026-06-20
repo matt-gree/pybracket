@@ -227,6 +227,133 @@ def test_divisioned_league_phase_to_playoff() -> None:
     assert len(pb.phase_results(t, "season")) == 8
 
 
+def _cross(lg: pb.Bracket) -> list[pb.Match]:
+    return [m for m in lg.matches if m.metadata["division"] is None]
+
+
+def _cross_degrees(lg: pb.Bracket) -> Counter:
+    deg: Counter = Counter()
+    for m in _cross(lg):
+        deg[m.participant1_id] += 1
+        deg[m.participant2_id] += 1
+    return deg
+
+
+@pytest.mark.parametrize("pairing", ["balanced", "top_seed_favored", "random"])
+def test_cross_division_gives_each_team_its_games(pairing: str) -> None:
+    cd = pb.CrossDivision(games_per_team=2, pairing=pairing, seed=1)
+    lg = pb.generate_league(
+        make_participants(8), divisions=2, points=pb.PointsSystem(), cross_division=cd
+    )
+    rosters = pb.league_divisions(lg)
+    div_of = {pid: i for i, r in enumerate(rosters) for pid in r}
+    cross = _cross(lg)
+    assert all(div_of[m.participant1_id] != div_of[m.participant2_id] for m in cross)
+    assert all(deg == 2 for deg in _cross_degrees(lg).values())
+
+
+def test_cross_division_round_robin_plays_everyone() -> None:
+    lg = pb.generate_league(
+        make_participants(8),
+        divisions=2,
+        points=pb.PointsSystem(),
+        cross_division=pb.CrossDivision(pairing="round_robin"),
+    )
+    # each team plays all 4 of the other division
+    assert all(deg == 4 for deg in _cross_degrees(lg).values())
+    assert len(_cross(lg)) == 16
+
+
+def test_cross_division_balanced_is_rank_symmetric() -> None:
+    lg = pb.generate_league(
+        make_participants(8),
+        divisions=2,
+        points=pb.PointsSystem(),
+        cross_division=pb.CrossDivision(games_per_team=1, pairing="balanced"),
+    )
+    # divisions [[1,4,5,8],[2,3,6,7]] -> same-rank pairs: 1-2, 4-3, 5-6, 8-7
+    pairs = {frozenset((m.participant1_id, m.participant2_id)) for m in _cross(lg)}
+    assert pairs == {frozenset((1, 2)), frozenset((4, 3)), frozenset((5, 6)), frozenset((8, 7))}
+
+
+def test_cross_division_repeat_home_away_doubles() -> None:
+    lg = pb.generate_league(
+        make_participants(8),
+        divisions=2,
+        points=pb.PointsSystem(),
+        cross_division=pb.CrossDivision(games_per_team=1, pairing="balanced", repeat_home_away=True),
+    )
+    assert all(deg == 2 for deg in _cross_degrees(lg).values())  # each cross pairing twice
+
+
+def test_cross_division_no_team_double_booked_in_a_week() -> None:
+    lg = pb.generate_league(
+        make_participants(8),
+        divisions=2,
+        points=pb.PointsSystem(),
+        cross_division=pb.CrossDivision(games_per_team=3, pairing="round_robin"),
+    )
+    for r in lg.rounds:
+        teams = [
+            pid
+            for mid in r.match_ids
+            for pid in (pb.get_match(lg, mid).participant1_id, pb.get_match(lg, mid).participant2_id)
+        ]
+        assert len(teams) == len(set(teams))
+
+
+def test_cross_division_random_is_reproducible() -> None:
+    def cross_pairs(seed: int) -> set:
+        lg = pb.generate_league(
+            make_participants(8), divisions=2, points=pb.PointsSystem(),
+            cross_division=pb.CrossDivision(2, "random", seed=seed),
+        )
+        return {frozenset((m.participant1_id, m.participant2_id)) for m in _cross(lg)}
+
+    assert cross_pairs(7) == cross_pairs(7)
+
+
+def test_cross_division_requires_two_divisions() -> None:
+    with pytest.raises(pb.ValidationError):
+        pb.generate_league(make_participants(8), divisions=1, cross_division=pb.CrossDivision(2))
+
+
+def test_cross_division_invalid_pairing_rejected() -> None:
+    with pytest.raises(pb.ValidationError):
+        pb.generate_league(
+            make_participants(8), divisions=2, cross_division=pb.CrossDivision(2, "zigzag")
+        )
+
+
+def test_cross_division_serialization_and_play() -> None:
+    lg = pb.generate_league(
+        make_participants(8), divisions=2, points=pb.PointsSystem(3, 1, 0),
+        cross_division=pb.CrossDivision(2, "balanced"),
+    )
+    rb = pb.bracket_from_json(pb.bracket_to_json(lg))
+    assert rb.config["cross_division"] == pb.CrossDivision(2, "balanced")
+    assert len(_cross(rb)) == len(_cross(lg))
+    assert pb.is_complete(simulate(rb))
+
+
+def test_cross_division_as_a_tournament_phase() -> None:
+    t = pb.generate_tournament(
+        make_participants(8),
+        [
+            pb.PhaseSpec("season", "league", groups=2, config={
+                "points_system": pb.PointsSystem(3, 1, 0),
+                "cross_division": pb.CrossDivision(1, "balanced"),
+            }),
+            pb.PhaseSpec("final", "single_elim",
+                         entrants=pb.Qualification(sources=pb.top_of_each_group("season", 1))),
+        ],
+    )
+    lg = t.phases[0].brackets[0]
+    assert any(m.metadata["division"] is None for m in lg.matches)  # cross games exist
+    t.phases[0].brackets[0] = simulate(lg)
+    assert len(pb.phase_results(t, "season", group=0)) == 4
+
+
 def test_league_phase_feeds_a_playoff() -> None:
     # league season -> top 4 into a single-elim playoff (the season->playoffs shape).
     t = pb.generate_tournament(

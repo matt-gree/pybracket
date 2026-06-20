@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from ..models.bracket import Bracket
+from ..models.cross_division import CrossDivision
 from ..models.enums import (
     AdvancementType,
     BracketSide,
@@ -157,7 +158,7 @@ def _config_to_dict(config: dict[str, Any]) -> dict[str, Any]:
     for key, value in config.items():
         if isinstance(value, PairingMethod):
             out[key] = value.value
-        elif isinstance(value, PointsSystem):
+        elif isinstance(value, (PointsSystem, CrossDivision)):
             out[key] = value.to_spec()
         else:
             out[key] = value
@@ -174,6 +175,10 @@ def _config_from_dict(config: dict[str, Any]) -> dict[str, Any]:
     ps = out.get("points_system")
     if isinstance(ps, dict):
         out["points_system"] = PointsSystem.from_spec(ps)
+    # 'cross_division' (league) is a CrossDivision dataclass stored as a flat dict.
+    cd = out.get("cross_division")
+    if isinstance(cd, dict):
+        out["cross_division"] = CrossDivision.from_spec(cd)
     # 'bye_rounds' (single_elim) is a seed->count map; JSON turns its int keys into strings,
     # so coerce them back so dict and JSON round-trips agree.
     bye_rounds = out.get("bye_rounds")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .bracket import Bracket
+from .cross_division import CrossDivision
 from .enums import (
     AdvancementType,
     BracketFormat,
@@ -33,6 +34,7 @@ __all__ = [
     "BracketFormat",
     "BracketSide",
     "BracketState",
+    "CrossDivision",
     "Game",
     "Match",
     "MatchStatus",

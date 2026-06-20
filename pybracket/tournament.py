@@ -421,12 +421,18 @@ def _build_league(parts: list[Participant], phase: Phase, state: BracketState) -
     ps = phase.config.get("points_system")
     if isinstance(ps, dict):
         ps = PointsSystem.from_spec(ps)
+    cd = phase.config.get("cross_division")
+    if isinstance(cd, dict):
+        from .models.cross_division import CrossDivision
+
+        cd = CrossDivision.from_spec(cd)
     return generate_league(
         parts,
         divisions=max(1, phase.groups),
         double=bool(phase.config.get("double", False)),
         best_of=int(phase.config.get("best_of", 1)),
         points=ps,
+        cross_division=cd,
         state=state,
     )
 
