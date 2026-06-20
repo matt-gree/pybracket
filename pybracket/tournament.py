@@ -155,6 +155,42 @@ def _group_results(bracket: Bracket, group_index: int) -> list[Ranked]:
     return [Ranked(pl.participant_id, pl.position, group_index) for pl in placements]
 
 
+def _divisioned_league(phase: Phase) -> Bracket | None:
+    """The phase's single bracket if it is a league split into >1 division, else None.
+
+    A divisioned league keeps every team in one bracket (so cross-division games can exist), so
+    its "groups" are division labels inside that bracket rather than separate sub-brackets.
+    """
+    if len(phase.brackets) == 1 and phase.brackets[0].format == "league":
+        bracket = phase.brackets[0]
+        if len(bracket.config.get("divisions") or []) > 1:
+            return bracket
+    return None
+
+
+def _phase_group_count(phase: Phase) -> int:
+    league = _divisioned_league(phase)
+    if league is not None:
+        return len(league.config["divisions"])
+    return len(phase.brackets) if phase.brackets else phase.groups
+
+
+def _group_size(phase: Phase, group: int) -> int:
+    league = _divisioned_league(phase)
+    if league is not None:
+        return len(league.config["divisions"][group])
+    return len(phase.brackets[group].participants)
+
+
+def _league_division_results(bracket: Bracket, division: int) -> list[Ranked]:
+    from .formats.league import division_standings
+
+    return [
+        Ranked(s.participant_id, s.rank, division)
+        for s in division_standings(bracket, division)
+    ]
+
+
 def phase_results(t: Tournament, phase_id: str, group: int | None = None) -> list[Ranked]:
     """Ranked finishers of a phase, overall (``group=None``) or for one group.
 
@@ -163,6 +199,9 @@ def phase_results(t: Tournament, phase_id: str, group: int | None = None) -> lis
     """
     phase = _phase(t, phase_id)
     if group is not None:
+        league = _divisioned_league(phase)
+        if league is not None:
+            return _league_division_results(league, group)
         return _group_results(phase.brackets[group], group)
     if len(phase.brackets) == 1:
         return _group_results(phase.brackets[0], 0)
@@ -205,14 +244,13 @@ def _source_finishers(
             f"Cannot preview against phase {phase_id!r}: its brackets are not built yet."
         )
     g = 0 if group is None else group
-    size = len(phase.brackets[g].participants)
+    size = _group_size(phase, g)
     return [_placeholder(phase_id, g, k, uid_base - k) for k in range(1, size + 1)]
 
 
 def _expand_groups(ref: SlotRef, phase: Phase) -> list[int | None]:
     if ref.group == EACH_GROUP:
-        count = len(phase.brackets) if phase.brackets else phase.groups
-        return list(range(count))
+        return list(range(_phase_group_count(phase)))
     return [ref.group]
 
 
@@ -308,16 +346,6 @@ def _build_one(
 ) -> Bracket:
     if fmt == "round_robin":
         return generate_round_robin(parts, state=state, pool_index=pool_index)
-    if fmt == "league":
-        from .formats.league import generate_league
-        from .models.points import PointsSystem
-
-        ps = config.get("points_system")
-        if isinstance(ps, dict):
-            ps = PointsSystem.from_spec(ps)
-        return generate_league(
-            parts, best_of=int(config.get("best_of", 1)), points=ps, state=state
-        )
     if fmt == "swiss":
         return generate_swiss(parts, rounds=config.get("rounds"), state=state)
     if fmt == "gauntlet":
@@ -364,6 +392,10 @@ def _build_brackets(
         raise ValidationError(
             f"Phase {phase.id!r} resolved to {len(reseeded)} entrants; need at least 2."
         )
+    if phase.format == "league":
+        # A league owns its own divisions internally (one bracket), so cross-division games can
+        # exist; ``groups`` is the division count, not a request for separate per-group brackets.
+        return [_build_league(reseeded, phase, state)]
     if phase.groups > 1:
         assignment = snake_pool_assignment(reseeded, phase.groups)
         return [
@@ -380,6 +412,22 @@ def _build_brackets(
             ranked_by_source=ranked_by_source if repair else None,
         )
     ]
+
+
+def _build_league(parts: list[Participant], phase: Phase, state: BracketState) -> Bracket:
+    from .formats.league import generate_league
+    from .models.points import PointsSystem
+
+    ps = phase.config.get("points_system")
+    if isinstance(ps, dict):
+        ps = PointsSystem.from_spec(ps)
+    return generate_league(
+        parts,
+        divisions=max(1, phase.groups),
+        best_of=int(phase.config.get("best_of", 1)),
+        points=ps,
+        state=state,
+    )
 
 
 # --------------------------------------------------------------------------------------

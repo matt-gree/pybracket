@@ -29,12 +29,14 @@ from .errors import (
 )
 from .formats import (
     advance_swiss_round,
+    division_standings,
     generate_double_elim,
     generate_gauntlet,
     generate_league,
     generate_round_robin,
     generate_single_elim,
     generate_swiss,
+    league_divisions,
 )
 from .models import (
     ALL_PLACES,
@@ -135,6 +137,8 @@ __all__ = [
     "generate_round_robin",
     "generate_swiss",
     "generate_league",
+    "league_divisions",
+    "division_standings",
     "generate_gauntlet",
     # Multi-stage tournaments
     "Tournament",

@@ -117,6 +117,80 @@ def test_serialization_roundtrip() -> None:
     assert rb.matches[0].metadata["matchweek"] == 1
 
 
+def test_divisions_split_into_one_bracket() -> None:
+    lg = pb.generate_league(make_participants(8), divisions=2)
+    rosters = pb.league_divisions(lg)
+    assert len(rosters) == 2
+    assert sorted(pid for r in rosters for pid in r) == list(range(1, 9))
+    # 2 divisions of 4 -> 6 intra-division games each, all in one bracket.
+    assert len(lg.matches) == 12
+    div_of = {pid: i for i, r in enumerate(rosters) for pid in r}
+    assert all(
+        div_of[m.participant1_id] == div_of[m.participant2_id] == m.metadata["division"]
+        for m in lg.matches
+    )
+
+
+def test_snake_division_assignment() -> None:
+    rosters = pb.league_divisions(pb.generate_league(make_participants(8), divisions=2))
+    # snake: seeds 1,4,5,8 -> div A; 2,3,6,7 -> div B
+    assert rosters[0] == [1, 4, 5, 8]
+    assert rosters[1] == [2, 3, 6, 7]
+
+
+def test_division_standings_filter_and_overall() -> None:
+    lg = simulate(
+        pb.generate_league(make_participants(8), divisions=2, points=pb.PointsSystem(3, 1, 0))
+    )
+    overall = pb.get_standings(lg)
+    assert len(overall) == 8
+    d0 = pb.division_standings(lg, 0)
+    assert {s.participant_id for s in d0} == {1, 4, 5, 8}
+    assert [s.rank for s in d0] == [1, 2, 3, 4]  # re-ranked within the division
+
+
+def test_invalid_division_count_rejected() -> None:
+    with pytest.raises(pb.ValidationError):
+        pb.generate_league(make_participants(8), divisions=0)
+    with pytest.raises(pb.ValidationError):
+        pb.generate_league(make_participants(4), divisions=3)  # <2 teams per division
+
+
+def test_division_standings_out_of_range() -> None:
+    lg = pb.generate_league(make_participants(8), divisions=2)
+    with pytest.raises(pb.ValidationError):
+        pb.division_standings(lg, 2)
+
+
+def test_divisions_serialization_roundtrip() -> None:
+    lg = pb.generate_league(make_participants(8), divisions=2, points=pb.PointsSystem(3, 1, 0))
+    rb = pb.bracket_from_json(pb.bracket_to_json(lg))
+    assert pb.league_divisions(rb) == pb.league_divisions(lg)
+    assert all(m.metadata.get("division") is not None for m in rb.matches)
+
+
+def test_divisioned_league_phase_to_playoff() -> None:
+    # 2-division league -> each division winner into a final.
+    t = pb.generate_tournament(
+        make_participants(8),
+        [
+            pb.PhaseSpec("season", "league", groups=2,
+                         config={"points_system": pb.PointsSystem(3, 1, 0)}),
+            pb.PhaseSpec("final", "single_elim",
+                         entrants=pb.Qualification(sources=pb.top_of_each_group("season", 1))),
+        ],
+    )
+    # one bracket, internally divided (not two separate brackets)
+    assert len(t.phases[0].brackets) == 1
+    season = simulate(t.phases[0].brackets[0])
+    t.phases[0].brackets[0] = season
+    d0 = pb.phase_results(t, "season", group=0)
+    d1 = pb.phase_results(t, "season", group=1)
+    assert d0[0].rank == 1 and d1[0].rank == 1
+    assert {d0[0].participant_id, d1[0].participant_id} == {1, 2}  # the two division winners
+    assert len(pb.phase_results(t, "season")) == 8
+
+
 def test_league_phase_feeds_a_playoff() -> None:
     # league season -> top 4 into a single-elim playoff (the season->playoffs shape).
     t = pb.generate_tournament(

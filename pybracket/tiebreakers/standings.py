@@ -90,15 +90,24 @@ def _build_chain(bracket: Bracket) -> list[Tiebreaker]:
     return chain
 
 
-def get_standings(bracket: Bracket) -> list[Standing]:
+def get_standings(
+    bracket: Bracket, participant_ids: list[Any] | None = None
+) -> list[Standing]:
     """Rank participants by the scalar tiebreaker chain, then relational cohort reorders.
 
     Scalar tiebreakers (win count, accumulated stats, …) build a sort key and rank the whole
     field. Relational tiebreakers (head-to-head, mini-league) then reorder, in chain order, only
     the cohorts the scalars left tied — their answer depends on which participants are tied, so
     they cannot be a global score. A cohort no tiebreaker can separate shares a rank.
+
+    ``participant_ids`` restricts ranking to a subset (e.g. one league division's teams), ranked
+    by their full record against everyone they played; the rest of the field is ignored.
     """
-    pids = [p.id for p in bracket.participants]
+    pids = (
+        list(participant_ids)
+        if participant_ids is not None
+        else [p.id for p in bracket.participants]
+    )
     ctx = StandingsContext(bracket.matches, pids, points_system=_points_system(bracket))
     chain = _build_chain(bracket)
     scalars = [tb for tb in chain if not isinstance(tb, RelationalTiebreaker)]
