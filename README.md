@@ -3,12 +3,15 @@
 A storage-agnostic, game-agnostic Python library for tournament bracket management.
 
 Supports **single elimination**, **double elimination**, **round robin**, **Swiss**,
-**pools**, and **gauntlet** formats.
+**gauntlet**, and **league** formats; chains them into **multi-stage tournaments** (pools →
+bracket, season → playoffs); and layers in a library-wide scoring system — **best-of series**,
+**points & draws**, and a **caller-owned tiebreaker chain**.
 
 - **Storage-agnostic.** The library never touches a database. Every operation takes and
   returns plain Python dataclasses; the caller owns persistence.
-- **Game-agnostic.** No game-specific logic. Custom stats (run differential, ratings, …)
-  flow through `Participant.stats` and a generic `StatTiebreaker`.
+- **Game-agnostic — the library names no stat.** You supply stat names (per game or match),
+  choose aggregations (for / against / diff / count / avg) and tiebreaker priority order; the
+  library does the arithmetic. Static ratings still flow through `Participant.stats`.
 - **Immutable-ish.** `report_result()`, `unwind_result()`, and the round-advancing helpers
   return a *new* `Bracket` rather than mutating in place, so callers can diff before/after.
 - **No runtime dependencies.** The core has zero third-party runtime dependencies.
@@ -57,6 +60,51 @@ bracket = pb.generate_swiss(players, pairing_method=pb.PairingMethod.DUTCH)
 # then generate the next round's pairings:
 bracket = pb.advance_swiss_round(bracket)
 ```
+
+### Best-of series, points & tiebreakers
+
+Track each game of a best-of-N match (not just the series winner), award points with draws,
+and rank by a tiebreaker chain you control. This layer is library-wide — any format can use it.
+
+```python
+# Report game-by-game; the match resolves at the clinch (best_of // 2 + 1) and advances.
+bracket = pb.set_best_of(bracket, 3)
+bracket = pb.report_game(bracket, match_id, winner_id, stats={"runs": (7, 3)})
+pb.get_match(bracket, match_id).series_score   # -> (games_p1, games_p2)
+
+# Standings formats can carry points + draws:
+rr = pb.generate_round_robin(players, tiebreakers=[
+    pb.AccumulatedTiebreaker("runs", "diff"),   # run differential, then ...
+    pb.HeadToHeadTiebreaker(),                   # relational: breaks remaining ties
+])
+rr.config["points_system"] = pb.PointsSystem(win=3, draw=1, loss=0)
+rr = pb.report_draw(rr, match_id)                # a no-winner result (standings only)
+
+# Ranked by points (auto-primary when a PointsSystem is set), then your chain.
+standings = pb.get_standings(rr)
+```
+
+See [SCORING_DESIGN.md](SCORING_DESIGN.md).
+
+### Leagues (regular-season play)
+
+A `league` is a round-robin season with a schedule, optional divisions, cross-division play,
+and home/away double rounds — built up with composable transforms (valid before play starts).
+
+```python
+league = pb.generate_league(teams, divisions=2)              # 2-division single round-robin
+league = pb.with_home_away(league)                            # home/away double round-robin
+league = pb.with_points(league, pb.PointsSystem(3, 1, 0))
+league = pb.with_cross_division(
+    league, pb.CrossDivision(games_per_team=2, pairing="balanced"))
+
+pb.division_standings(league, 0)   # one division's table; pb.get_standings(league) -> overall
+pb.league_schedule(league)         # matchweeks -> fixtures (home/away/division) for UIs
+```
+
+The schedule lives in match metadata (matchweek, home/away, venue) the TO can edit freely. A
+league is also a `Phase` format, so `season → playoffs` is just a `Tournament` whose second
+phase pulls qualifiers via a `Qualification`. See [LEAGUES_DESIGN.md](LEAGUES_DESIGN.md).
 
 ### Multi-stage tournaments (pools → bracket and beyond)
 
@@ -125,7 +173,14 @@ same = pb.bracket_from_json(text)
 ## Design
 
 See [SPEC.md](SPEC.md) for the full specification and [CONTRIBUTING.md](CONTRIBUTING.md)
-for development workflow.
+for development workflow. Feature design docs:
+
+- [SCORING_DESIGN.md](SCORING_DESIGN.md) — best-of series, stat accumulation, the tiebreaker
+  chain, draws & points.
+- [LEAGUES_DESIGN.md](LEAGUES_DESIGN.md) — the `league` format, divisions, cross-division play,
+  schedule, and transforms.
+- [MULTISTAGE_DESIGN.md](MULTISTAGE_DESIGN.md) — the Tournament/Phase engine and qualification
+  wiring.
 
 ## Acknowledgements
 
