@@ -123,3 +123,12 @@ def test_no_rematches_with_random_results(
         if m.participant1_id is not None and m.participant2_id is not None
     ]
     assert len(pairs) == len(set(pairs))
+
+
+def test_state_draft_builds_without_locking() -> None:
+    draft = pb.generate_swiss(make_participants(8), rounds=3, state=pb.BracketState.DRAFT)
+    assert draft.state is pb.BracketState.DRAFT
+    # Round 1 is still paired (Swiss can't be built otherwise), just not locked.
+    assert len([m for m in draft.matches if m.round_number == 1]) > 0
+    # Default remains PUBLISHED.
+    assert pb.generate_swiss(make_participants(8), rounds=3).state is pb.BracketState.PUBLISHED

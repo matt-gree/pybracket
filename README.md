@@ -58,19 +58,35 @@ bracket = pb.generate_swiss(players, pairing_method=pb.PairingMethod.DUTCH)
 bracket = pb.advance_swiss_round(bracket)
 ```
 
-### Pools → bracket
+### Multi-stage tournaments (pools → bracket and beyond)
+
+Chain phases of any formats under one `Tournament`. "Pools" is just a grouped round-robin
+phase (`groups=N`); the bracket is the next phase, pulling qualifiers via a `Qualification`.
 
 ```python
-pools = pb.generate_pools(players, num_pools=2, advancement_count=2)
-# Play all pool matches, then snake-seed the survivors into a DRAFT elimination bracket the
-# organizer can review (and reorder) before it goes live:
-pools = pb.draft_pools_to_bracket(pools)
-pools = pb.draft_pools_to_bracket(pools, new_seed_order=[...])  # optional manual reseed
-pools = pb.publish_bracket(pools)                               # lock it in for play
+t = pb.generate_tournament(players, phases=[
+    pb.PhaseSpec("pools", "round_robin", groups=2),           # phase 0, built live
+    pb.PhaseSpec("cut", "double_elim",
+                 entrants=pb.Qualification(
+                     sources=pb.top_of_each_group("pools", 2),  # top 2 of each pool
+                     seeding="snake")),
+])
 
-# Or do both steps at once:
-pools = pb.reseed_pools_to_bracket(pools)
+# Play each pool with the normal report_result, putting the result back on the phase:
+for i, bracket in enumerate(t.phases[0].brackets):
+    t.phases[0].brackets[i] = play(bracket)
+
+# Snake-seed the survivors into a DRAFT bracket the organizer can review (and reorder),
+# then lock it in for play:
+t = pb.draft_phase(t, "cut")
+t = pb.draft_phase(t, "cut", new_seed_order=[...])  # optional manual reseed
+t = pb.publish_phase(t, "cut")
+t = pb.advance_phase(t, "cut")                       # or do draft + publish in one step
 ```
+
+This generalizes to any chain — Swiss → top-cut, pools → pools → bracket, or the high/low
+merge where one pool seeds everyone and another cuts to its top-N (`pb.all_of("pools#0") +
+pb.top("pools#1", 4)`). See `MULTISTAGE_DESIGN.md`.
 
 ### Multi-round byes (single elimination)
 

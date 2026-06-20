@@ -31,14 +31,44 @@ def build_single_elim(
     third_place_match: bool = False,
     state: BracketState = BracketState.PUBLISHED,
     config: dict[str, Any] | None = None,
+    survivors: int | None = None,
 ) -> Bracket:
-    """Build a single-elimination bracket from a pre-ordered slot list (length = power of 2)."""
+    """Build a single-elimination bracket from a pre-ordered slot list (length = power of 2).
+
+    ``survivors`` truncates the bracket into a *qualifier bracket*: play only enough rounds to
+    leave exactly that many co-survivors (a power of two, ``2 <= survivors < field``), who then
+    advance with no champion crowned. Incompatible with ``third_place_match`` and with byes.
+    """
+    size = len(ordered_slots)
+    max_rounds: int | None = None
+    truncated_to: int | None = None
+    if survivors is not None:
+        if third_place_match:
+            raise ValidationError(
+                "third_place_match cannot be combined with survivors: a truncated qualifier "
+                "bracket has no final."
+            )
+        if any(s is None for s in ordered_slots):
+            raise ValidationError(
+                "survivors (truncation) requires a full power-of-two field with no byes."
+            )
+        if survivors < 2 or survivors >= size or (survivors & (survivors - 1)) != 0:
+            raise ValidationError(
+                f"survivors must be a power of two with 2 <= survivors < field size ({size}); "
+                f"got {survivors}."
+            )
+        full_rounds = size.bit_length() - 1
+        max_rounds = full_rounds - (survivors.bit_length() - 1)
+        truncated_to = survivors
+
     id_gen = IdGen()
     matches, round_match_ids, final_id = build_standard_bracket(
-        ordered_slots, id_gen, BracketSide.WINNERS
+        ordered_slots, id_gen, BracketSide.WINNERS, max_rounds=max_rounds
     )
     by_id = {m.id: m for m in matches}
     num_rounds = len(round_match_ids)
+    # Name rounds relative to the *full* bracket so a truncated last round is never "Final".
+    name_rounds = size.bit_length() - 1
 
     rounds: list[Round] = []
     for r_index, ids in enumerate(round_match_ids):
@@ -47,7 +77,7 @@ def build_single_elim(
                 number=r_index + 1,
                 bracket_side=BracketSide.WINNERS,
                 match_ids=list(ids),
-                name=single_elim_round_name(r_index + 1, num_rounds),
+                name=single_elim_round_name(r_index + 1, name_rounds),
             )
         )
 
@@ -73,6 +103,8 @@ def build_single_elim(
         )
 
     cfg: dict[str, Any] = {"third_place_match": third_place_match}
+    if truncated_to is not None:
+        cfg["truncated_to"] = truncated_to
     if config:
         cfg.update(config)
 
@@ -93,8 +125,14 @@ def generate_single_elim(
     third_place_match: bool = False,
     protected_seeds: int = 0,
     bye_rounds: dict[int, int] | None = None,
+    survivors: int | None = None,
 ) -> Bracket:
     """Generate a single-elimination bracket.
+
+    ``survivors`` truncates the bracket into a qualifier bracket that stops once that many
+    co-survivors remain (a power of two, ``2 <= survivors < field``), crowning no champion.
+    Requires a power-of-two field (no byes) and cannot be combined with ``bye_rounds``,
+    ``protected_seeds``, or ``third_place_match``.
 
     ``bye_rounds`` maps a seed number to the number of *rounds* that seed skips before its
     first match. ``None`` (the default) keeps the classic behaviour: the field is rounded up
@@ -119,10 +157,17 @@ def generate_single_elim(
                 "protected_seeds and bye_rounds cannot be combined; bye_rounds fully "
                 "determines the round structure."
             )
+        if survivors is not None:
+            raise ValidationError(
+                "survivors (truncation) cannot be combined with bye_rounds."
+            )
         return _build_bye_rounds_single_elim(participants, bye_rounds, third_place_match)
 
     ordered = sorted(participants, key=lambda p: p.seed)
     size = next_power_of_2(len(ordered))
+
+    if survivors is not None and protected_seeds:
+        raise ValidationError("survivors (truncation) cannot be combined with protected_seeds.")
 
     if protected_seeds:
         positions = standard_bracket_positions(size)
@@ -137,6 +182,7 @@ def generate_single_elim(
         participants,
         third_place_match=third_place_match,
         config={"protected_seeds": protected_seeds},
+        survivors=survivors,
     )
 
 

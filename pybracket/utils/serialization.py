@@ -15,12 +15,17 @@ from ..models.enums import (
 from ..models.match import Match
 from ..models.participant import Participant
 from ..models.round import Round
+from ..models.tournament import Phase, Qualification, SlotRef, Tournament
 
 __all__ = [
     "bracket_to_dict",
     "bracket_from_dict",
     "bracket_to_json",
     "bracket_from_json",
+    "tournament_to_dict",
+    "tournament_from_dict",
+    "tournament_to_json",
+    "tournament_from_json",
 ]
 
 
@@ -137,6 +142,70 @@ def bracket_from_dict(data: dict[str, Any]) -> Bracket:
     )
 
 
+def _slotref_to_dict(s: SlotRef) -> dict[str, Any]:
+    return {"phase": s.phase, "place": s.place, "group": s.group}
+
+
+def _slotref_from_dict(d: dict[str, Any]) -> SlotRef:
+    return SlotRef(phase=d["phase"], place=d["place"], group=d.get("group"))
+
+
+def _qualification_to_dict(q: Qualification) -> dict[str, Any]:
+    return {"sources": [_slotref_to_dict(s) for s in q.sources], "seeding": q.seeding}
+
+
+def _qualification_from_dict(d: dict[str, Any]) -> Qualification:
+    return Qualification(
+        sources=[_slotref_from_dict(s) for s in d["sources"]],
+        seeding=d.get("seeding", "snake"),
+    )
+
+
+def _phase_to_dict(p: Phase) -> dict[str, Any]:
+    return {
+        "id": p.id,
+        "format": p.format,
+        "config": _config_to_dict(p.config),
+        "groups": p.groups,
+        "group_assignment": p.group_assignment,
+        "state": p.state.value,
+        "entrants": None if p.entrants is None else _qualification_to_dict(p.entrants),
+        "brackets": [bracket_to_dict(b) for b in p.brackets],
+    }
+
+
+def _phase_from_dict(d: dict[str, Any]) -> Phase:
+    entrants = d.get("entrants")
+    return Phase(
+        id=d["id"],
+        format=d["format"],
+        config=_config_from_dict(d.get("config", {})),
+        entrants=None if entrants is None else _qualification_from_dict(entrants),
+        groups=d.get("groups", 1),
+        group_assignment=d.get("group_assignment", "snake"),
+        brackets=[bracket_from_dict(b) for b in d.get("brackets", [])],
+        state=BracketState(d["state"]),
+    )
+
+
+def tournament_to_dict(tournament: Tournament) -> dict[str, Any]:
+    """Serialize a Tournament (all phases and their brackets) to a plain dict."""
+    return {
+        "participants": [_participant_to_dict(p) for p in tournament.participants],
+        "config": _config_to_dict(tournament.config),
+        "phases": [_phase_to_dict(p) for p in tournament.phases],
+    }
+
+
+def tournament_from_dict(data: dict[str, Any]) -> Tournament:
+    """Reconstruct a Tournament from a dict produced by tournament_to_dict."""
+    return Tournament(
+        phases=[_phase_from_dict(p) for p in data["phases"]],
+        participants=[_participant_from_dict(p) for p in data["participants"]],
+        config=_config_from_dict(data.get("config", {})),
+    )
+
+
 def _json_default(obj: Any) -> Any:
     if isinstance(obj, UUID):
         return str(obj)
@@ -151,3 +220,13 @@ def bracket_to_json(bracket: Bracket) -> str:
 def bracket_from_json(json_str: str) -> Bracket:
     """Reconstruct a Bracket from a JSON string produced by bracket_to_json."""
     return bracket_from_dict(json.loads(json_str))
+
+
+def tournament_to_json(tournament: Tournament) -> str:
+    """Serialize a Tournament to a JSON string. Non-JSON-native ids are stringified."""
+    return json.dumps(tournament_to_dict(tournament), default=_json_default)
+
+
+def tournament_from_json(json_str: str) -> Tournament:
+    """Reconstruct a Tournament from a JSON string produced by tournament_to_json."""
+    return tournament_from_dict(json.loads(json_str))

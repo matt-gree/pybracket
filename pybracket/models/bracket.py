@@ -24,7 +24,5 @@ class Bracket:
     #   double_elim:  grand_final_reset (bool)
     #   swiss:        rounds (int), pairing_method (PairingMethod),
     #                 tiebreakers (list[str]), allow_bye (bool)
-    #   pools:        num_pools (int), advancement_count (int),
-    #                 bracket_format (str), snake_shuffle (bool)
     #   gauntlet:     style ('single' | 'dual'), opponent_choice (bool),
     #                 choice_scope ('round' | 'semifinals')

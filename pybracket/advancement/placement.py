@@ -33,7 +33,62 @@ def get_placements(bracket: Bracket) -> list[Placement]:
     """Final placements computed from bracket structure (only meaningful once complete)."""
     if bracket.format in ("round_robin", "swiss"):
         return _standings_placements(bracket)
+    if bracket.config.get("truncated_to"):
+        return _truncated_placements(bracket)
     return _elimination_placements(bracket)
+
+
+def _truncated_placements(bracket: Bracket) -> list[Placement]:
+    """Placements for a truncated single-elim qualifier bracket: the winners of the last played
+    round are co-survivors at the top (ranked among themselves by seed), and everyone else is
+    placed by the round in which they lost."""
+    survivors_n = int(bracket.config["truncated_to"])
+    seed_of = {p.id: p.seed for p in bracket.participants}
+    played = [
+        m
+        for m in bracket.matches
+        if m.status is MatchStatus.COMPLETED and not m.metadata.get("consolation")
+    ]
+    last_round = max((m.round_number for m in played), default=0)
+
+    survivors = [
+        m.winner_id
+        for m in played
+        if m.round_number == last_round and m.winner_id is not None
+    ]
+    survivors.sort(key=lambda pid: seed_of.get(pid, 0))
+    placements: list[Placement] = [
+        Placement(
+            participant_id=pid,
+            position=pos,
+            position_label=f"Top {survivors_n}",
+            eliminated_in="",
+        )
+        for pos, pid in enumerate(survivors, start=1)
+    ]
+
+    # Losers ranked by the round they exited in (later round = better placement).
+    losers = [(m.round_number, m.loser_id, m.id) for m in played if m.loser_id is not None]
+    losers.sort(key=lambda t: (-t[0], seed_of.get(t[1], 0)))
+    position = survivors_n + 1
+    i = 0
+    while i < len(losers):
+        rnd = losers[i][0]
+        group = [t for t in losers[i:] if t[0] == rnd]
+        upper = position + len(group) - 1
+        label = ordinal(position) if len(group) == 1 else f"Top {upper}"
+        for _, pid, match_id in group:
+            placements.append(
+                Placement(
+                    participant_id=pid,
+                    position=position,
+                    position_label=label,
+                    eliminated_in=_round_name_of(bracket, match_id),
+                )
+            )
+            position += 1
+        i += len(group)
+    return placements
 
 
 def _standings_placements(bracket: Bracket) -> list[Placement]:
