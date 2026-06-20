@@ -1,11 +1,20 @@
 # Leagues — design
 
-Status: **proposal** (no code yet). Target: league / regular-season play as a first-class
+Status: **implemented** (2026-06-19). Target: league / regular-season play as a first-class
 phase — round-robin at heart, but with **divisions**, **cross-division play**, an **optional
 points system with draws**, **home/away (double) scheduling**, **best-of per match**, and a
 TO-editable **schedule** — all expressed as composable transformations over a base league, and
 plugging into the existing multi-stage `Tournament` (so a regular season feeds a playoff
 bracket for free).
+
+**Implementation status:** built in five slices — §A `league` format foundation
+(`generate_league`, schedule-in-metadata, home/away, league-as-a-Phase), §B divisions (one
+bracket with division labels; `division_standings`; multistage made division-aware), §C
+home/away double round-robin, §D cross-division play (`CrossDivision`, four pairing strategies),
+§E `with_*` transforms + `league_schedule` view. Divisions live as labels in **one** bracket
+(not separate per-group brackets) so cross-division games can span them. Format presets are left
+as thin recipes for examples/frontend (not blessed library types). Full suite green, mypy strict
++ ruff clean.
 
 This builds on [MULTISTAGE_DESIGN.md](MULTISTAGE_DESIGN.md): a league is a **Phase format**, so
 a single-phase `Tournament` *is* a standalone league, and `league → playoffs` is just a second
