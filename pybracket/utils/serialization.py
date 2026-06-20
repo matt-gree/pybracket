@@ -44,8 +44,30 @@ def _stats_to_dict(stats: dict[str, dict[Any, float]]) -> dict[str, dict[Any, fl
 
 def _stats_from_dict(stats: dict[str, Any]) -> dict[str, dict[Any, float]]:
     # Per-id stat contributions, keyed by stat name then participant id. JSON stringifies the
-    # inner id keys (as it does elsewhere in the model); values are coerced back to float.
+    # inner id keys; values are coerced back to float. The keys are mapped back to their typed
+    # participant ids by `_coerce_bracket_stat_ids` once the participant list is known.
     return {name: {pid: float(v) for pid, v in vals.items()} for name, vals in stats.items()}
+
+
+def _coerce_stat_ids(stats: dict[str, dict[Any, float]], id_by_str: dict[str, Any]) -> None:
+    for name, vals in list(stats.items()):
+        stats[name] = {id_by_str.get(str(k), k): v for k, v in vals.items()}
+
+
+def _coerce_bracket_stat_ids(bracket: Bracket) -> None:
+    """Map stringified stat-dict keys back to their typed participant ids (after JSON keys it).
+
+    JSON object keys are always strings, so a stat dict keyed by an int (or UUID) participant id
+    comes back stringified. Once the bracket's participants are known, restore each stat key to
+    the matching participant id type so accumulation can look stats up by id.
+    """
+    id_by_str = {str(p.id): p.id for p in bracket.participants}
+    if not id_by_str:
+        return
+    for m in bracket.matches:
+        _coerce_stat_ids(m.stats, id_by_str)
+        for g in m.games:
+            _coerce_stat_ids(g.stats, id_by_str)
 
 
 def _game_to_dict(g: Game) -> dict[str, Any]:
@@ -167,7 +189,7 @@ def bracket_to_dict(bracket: Bracket) -> dict[str, Any]:
 
 def bracket_from_dict(data: dict[str, Any]) -> Bracket:
     """Reconstruct a Bracket from a dict produced by bracket_to_dict."""
-    return Bracket(
+    bracket = Bracket(
         format=data["format"],
         state=BracketState(data["state"]),
         participants=[_participant_from_dict(p) for p in data["participants"]],
@@ -175,6 +197,8 @@ def bracket_from_dict(data: dict[str, Any]) -> Bracket:
         rounds=[_round_from_dict(r) for r in data["rounds"]],
         config=_config_from_dict(data.get("config", {})),
     )
+    _coerce_bracket_stat_ids(bracket)
+    return bracket
 
 
 def _slotref_to_dict(s: SlotRef) -> dict[str, Any]:
