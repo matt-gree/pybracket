@@ -3,19 +3,29 @@ from __future__ import annotations
 from .base import BaseFormat
 from .double_elim import generate_double_elim
 from .gauntlet import generate_gauntlet
-from .league import division_standings, generate_league, league_divisions
+from .league import (
+    Fixture,
+    Matchweek,
+    division_standings,
+    generate_league,
+    league_divisions,
+    league_schedule,
+)
 from .round_robin import generate_round_robin
 from .single_elim import generate_single_elim
 from .swiss import advance_swiss_round, generate_swiss
 
 __all__ = [
     "BaseFormat",
+    "Fixture",
+    "Matchweek",
     "advance_swiss_round",
     "division_standings",
     "generate_double_elim",
     "generate_gauntlet",
     "generate_league",
     "league_divisions",
+    "league_schedule",
     "generate_round_robin",
     "generate_single_elim",
     "generate_swiss",

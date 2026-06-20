@@ -28,6 +28,8 @@ from .errors import (
     ValidationError,
 )
 from .formats import (
+    Fixture,
+    Matchweek,
     advance_swiss_round,
     division_standings,
     generate_double_elim,
@@ -37,6 +39,7 @@ from .formats import (
     generate_single_elim,
     generate_swiss,
     league_divisions,
+    league_schedule,
 )
 from .models import (
     ALL_PLACES,
@@ -63,7 +66,15 @@ from .models import (
     Standing,
     Tournament,
 )
-from .operations import publish_bracket, reseed, set_best_of
+from .operations import (
+    publish_bracket,
+    reseed,
+    set_best_of,
+    with_best_of,
+    with_cross_division,
+    with_home_away,
+    with_points,
+)
 from .seeding import (
     ByeCompletion,
     ByeProfile,
@@ -141,6 +152,9 @@ __all__ = [
     "generate_league",
     "league_divisions",
     "division_standings",
+    "league_schedule",
+    "Matchweek",
+    "Fixture",
     "generate_gauntlet",
     # Multi-stage tournaments
     "Tournament",
@@ -197,6 +211,11 @@ __all__ = [
     "publish_bracket",
     "reseed",
     "set_best_of",
+    # League transforms
+    "with_home_away",
+    "with_best_of",
+    "with_points",
+    "with_cross_division",
     # Tiebreakers
     "Tiebreaker",
     "WinCountTiebreaker",

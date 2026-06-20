@@ -354,6 +354,58 @@ def test_cross_division_as_a_tournament_phase() -> None:
     assert len(pb.phase_results(t, "season", group=0)) == 4
 
 
+def test_transforms_compose() -> None:
+    lg = pb.generate_league(make_participants(8), divisions=2)
+    lg = pb.with_home_away(lg)
+    lg = pb.with_points(lg, pb.PointsSystem(3, 1, 0))
+    lg = pb.with_best_of(lg, 3)
+    lg = pb.with_cross_division(lg, pb.CrossDivision(1, "balanced"))
+    assert lg.config["double"] is True
+    assert lg.config["best_of"] == 3
+    assert lg.config["points_system"] == pb.PointsSystem(3, 1, 0)
+    assert lg.config["cross_division"] == pb.CrossDivision(1, "balanced")
+    assert len(pb.league_divisions(lg)) == 2
+    assert all(m.best_of == 3 for m in lg.matches)
+
+
+def test_with_home_away_builds_double() -> None:
+    lg = pb.with_home_away(pb.generate_league(make_participants(4)))
+    assert lg.config["double"] is True
+    assert len(lg.matches) == 12  # double RR of 4
+
+
+def test_transform_after_results_raises() -> None:
+    lg = pb.generate_league(make_participants(4), points=pb.PointsSystem())
+    m = pb.get_ready_matches(lg)[0]
+    lg = pb.report_result(lg, m.id, m.participant1_id)
+    with pytest.raises(pb.BracketStateError):
+        pb.with_home_away(lg)
+
+
+def test_transform_on_non_league_raises() -> None:
+    with pytest.raises(pb.ValidationError):
+        pb.with_home_away(pb.generate_round_robin(make_participants(4)))
+
+
+def test_league_schedule_view() -> None:
+    lg = pb.generate_league(
+        make_participants(8), divisions=2, points=pb.PointsSystem(),
+        cross_division=pb.CrossDivision(1, "balanced"),
+    )
+    sched = pb.league_schedule(lg)
+    assert [w.number for w in sched] == sorted(w.number for w in sched)
+    # every match appears exactly once across the matchweeks
+    fixture_ids = {f.match_id for w in sched for f in w.fixtures}
+    assert fixture_ids == {m.id for m in lg.matches}
+    # a fixture records home/away and division (None for cross games)
+    sample = sched[0].fixtures[0]
+    assert isinstance(sample, pb.Fixture)
+    assert {sample.home_id, sample.away_id} == {
+        m.participant1_id for m in lg.matches if m.id == sample.match_id
+    } | {m.participant2_id for m in lg.matches if m.id == sample.match_id}
+    assert any(f.division is None for w in sched for f in w.fixtures)  # cross games present
+
+
 def test_league_phase_feeds_a_playoff() -> None:
     # league season -> top 4 into a single-elim playoff (the season->playoffs shape).
     t = pb.generate_tournament(

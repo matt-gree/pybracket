@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass
 from typing import Any
 
 from ..advancement.engine import settle_initial
@@ -21,7 +22,30 @@ from ..utils.validation import validate_participants
 from .base import IdGen, make_match
 from .round_robin import circle_method_rounds
 
-__all__ = ["generate_league", "league_divisions", "division_standings"]
+__all__ = [
+    "generate_league",
+    "league_divisions",
+    "division_standings",
+    "league_schedule",
+    "Matchweek",
+    "Fixture",
+]
+
+
+@dataclass(frozen=True)
+class Fixture:
+    """One scheduled game in a league read-model: who hosts whom, in which division."""
+
+    match_id: int
+    home_id: Any
+    away_id: Any
+    division: int | None  # None for a cross-division game
+
+
+@dataclass(frozen=True)
+class Matchweek:
+    number: int
+    fixtures: list[Fixture]
 
 
 def _assign_home(a: Any, b: Any, home_counts: dict[Any, int], parity: int = 0) -> tuple[Any, Any]:
@@ -293,3 +317,23 @@ def division_standings(bracket: Bracket, division: int) -> list[Standing]:
     if not 0 <= division < len(rosters):
         raise ValidationError(f"No division {division} (league has {len(rosters)}).")
     return get_standings(bracket, rosters[division])
+
+
+def league_schedule(bracket: Bracket) -> list[Matchweek]:
+    """A read-model of the season: matchweeks, each with its fixtures (home/away/division).
+
+    Assembled from the rounds and per-match schedule metadata — convenient for UIs — without
+    storing a second copy. The TO's edits to ``matchweek``/``home_id``/``away_id`` are reflected.
+    """
+    by_week: dict[int, list[Fixture]] = {}
+    for m in bracket.matches:
+        week = int(m.metadata.get("matchweek", m.round_number))
+        by_week.setdefault(week, []).append(
+            Fixture(
+                match_id=m.id,
+                home_id=m.metadata.get("home_id", m.participant1_id),
+                away_id=m.metadata.get("away_id", m.participant2_id),
+                division=m.metadata.get("division"),
+            )
+        )
+    return [Matchweek(number=week, fixtures=by_week[week]) for week in sorted(by_week)]

@@ -11,13 +11,23 @@ from .advancement.engine import (
 )
 from .errors import BracketStateError, ReseedError, ValidationError
 from .models.bracket import Bracket
+from .models.cross_division import CrossDivision
 from .models.enums import AdvancementType, BracketState, PairingMethod
 from .models.participant import Participant
+from .models.points import PointsSystem
 
 # A reported result of any kind (incl. a draw) means play has begun.
 _PLAYED = REAL_RESULTS | {AdvancementType.DRAW}
 
-__all__ = ["publish_bracket", "reseed", "set_best_of"]
+__all__ = [
+    "publish_bracket",
+    "reseed",
+    "set_best_of",
+    "with_home_away",
+    "with_best_of",
+    "with_points",
+    "with_cross_division",
+]
 
 
 def publish_bracket(bracket: Bracket) -> Bracket:
@@ -168,3 +178,57 @@ def set_best_of(
         if r.number in overrides:
             r.best_of = overrides[r.number]
     return b
+
+
+# --------------------------------------------------------------------------------------
+# League transforms — composable sugar that rebuild the schedule with a new option.
+# Each operates before play starts (DRAFT, or PUBLISHED with no results) and otherwise raises,
+# mirroring reseed's state rules. A league is fully determined by its config + participants, so a
+# transform is a regenerate with one option overridden — which keeps them composable.
+# --------------------------------------------------------------------------------------
+
+
+def _rebuild_league(bracket: Bracket, **overrides: Any) -> Bracket:
+    if bracket.format != "league":
+        raise ValidationError("League transforms apply only to a league bracket.")
+    if _has_played(bracket):
+        raise BracketStateError("Cannot transform a league once results have been reported.")
+
+    from .formats.league import generate_league
+    from .tiebreakers.standings import deserialize_tiebreakers
+
+    cfg = bracket.config
+    rosters = cfg.get("divisions")
+    tb_specs = cfg.get("tiebreakers")
+    params: dict[str, Any] = {
+        "divisions": len(rosters) if rosters else 1,
+        "double": bool(cfg.get("double", False)),
+        "best_of": int(cfg.get("best_of", 1)),
+        "points": cfg.get("points_system"),
+        "cross_division": cfg.get("cross_division"),
+        "tiebreakers": (
+            deserialize_tiebreakers(tb_specs, bracket.participants) if tb_specs else None
+        ),
+    }
+    params.update(overrides)
+    return generate_league(bracket.participants, state=bracket.state, **params)
+
+
+def with_home_away(league: Bracket) -> Bracket:
+    """Rebuild a league as a home/away double round-robin (before any results)."""
+    return _rebuild_league(league, double=True)
+
+
+def with_best_of(league: Bracket, best_of: int) -> Bracket:
+    """Rebuild a league with a new best-of for every match (before any results)."""
+    return _rebuild_league(league, best_of=best_of)
+
+
+def with_points(league: Bracket, points: PointsSystem) -> Bracket:
+    """Rebuild a league with a points system — W/D/L points and draws (before any results)."""
+    return _rebuild_league(league, points=points)
+
+
+def with_cross_division(league: Bracket, cross_division: CrossDivision) -> Bracket:
+    """Rebuild a league with inter-division play layered on (before any results)."""
+    return _rebuild_league(league, cross_division=cross_division)
